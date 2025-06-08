@@ -1,0 +1,7 @@
+network: AffineAug
+
+network_kwargs:
+  input_shape: null
+  rotation: 15
+  translation: 0.1
+  epsilon: 0.4

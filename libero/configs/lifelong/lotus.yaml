@@ -1,0 +1,5 @@
+algo: LOTUS
+phase: 'lifelong'
+eval_in_train: true
+defaults:
+  - lotus: default

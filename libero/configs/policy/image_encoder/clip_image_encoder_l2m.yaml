@@ -1,0 +1,7 @@
+network: CLIPImageEncoder
+defaults:
+    - adapter: l2mlora.yaml
+network_kwargs:
+    use_lora: 'L2MLoRAqkv'  # 'LoRAqkv' or 'None'
+    fullft: false
+    use_intermediate: false

@@ -1,0 +1,5 @@
+network: IdentityEncoder
+network_kwargs:
+    dummy: true
+    input_size: 768
+    sentence_length: None

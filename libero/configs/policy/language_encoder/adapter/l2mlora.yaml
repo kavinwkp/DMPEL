@@ -1,0 +1,4 @@
+pool_size: 30
+rank: 8
+lora_layers_list: [6,7,8,9,10,11]
+pull_constraint_coef: 0.5

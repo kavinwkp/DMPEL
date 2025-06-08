@@ -1,0 +1,6 @@
+network: ClipTextEncoder
+defaults:
+    - adapter: iscillora.yaml
+network_kwargs:
+    use_lora: 'L2MLoRA'  # 'LoRA' or 'None'
+    fullft: false

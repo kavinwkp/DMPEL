@@ -1,0 +1,7 @@
+network: ClipTextEncoder
+defaults:
+    - adapter: lora8.yaml
+network_kwargs:
+    use_lora: 'LoRA'  # 'LoRA' or 'None'
+    fullft: false
+    model_name: "openai/clip-vit-base-patch16"
