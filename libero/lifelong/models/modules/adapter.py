@@ -355,8 +355,8 @@ class MoELoRA(nn.Module):
     def __init__(
         self,
         projection: nn.Module,
-        rank: int = 8,
-        alpha: int = 8, # scale = lora_alpha / rank
+        rank: int = 16,
+        alpha: int = 16, # scale = lora_alpha / rank
         init_pool_size: int = 1,
         merge_AB: str='output',
         tune_bias: bool=True,
@@ -562,8 +562,8 @@ class MoELoRAqkv(nn.Module):
     def __init__(
         self,
         qkv: nn.Module,
-        rank: int = 8,
-        alpha: int = 8, # scale = lora_alpha / rank
+        rank: int = 16,
+        alpha: int = 16, # scale = lora_alpha / rank
         init_pool_size: int = 1,
         merge_AB: str='output',
         tune_bias: bool=True,
