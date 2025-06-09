@@ -2,6 +2,8 @@
 
 Yuheng Lei, Sitong Mao, Shunbo Zhou, Hongyuan Zhang, Xuelong Li, Ping Luo
 
+[[Paper]](https://arxiv.org/abs/2506.05985)
+
 ## Installation
 Please run the following commands in the given order to install the dependency and the [**LIBERO** benchmark](https://libero-project.github.io).
 ```
