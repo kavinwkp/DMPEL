@@ -2,7 +2,7 @@
 
 Yuheng Lei, Sitong Mao, Shunbo Zhou, Hongyuan Zhang, Xuelong Li, Ping Luo
 
-[[Paper]](https://arxiv.org/abs/2506.05985)
+[[Paper]](https://arxiv.org/abs/2506.05985) [[Pretraining Checkpoint (LIBERO-90)]](https://huggingface.co/leiyuheng/DMPEL/tree/main)
 
 ## Installation
 Please run the following commands in the given order to install the dependency and the [**LIBERO** benchmark](https://libero-project.github.io).
@@ -61,4 +61,4 @@ We provide the scripts to reproduce results in the paper in `exp_scripts/lifelon
 sh exp_scripts/lifelong_scripts/dmpel.sh
 ```
 
-Note that the pretrained model path should be the same as the final checkpoint you saved during pretraining.
+Note that the pretrained model path should be the same as the final checkpoint you saved during pretraining. We also provide our [pretraining checkpoint](https://huggingface.co/leiyuheng/DMPEL/tree/main) to facilitate the replication of results presented in the main paper.
