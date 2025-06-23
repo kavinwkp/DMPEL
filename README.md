@@ -41,7 +41,7 @@ python libero/lifelong/main.py seed=SEED \
 
 - `BENCHMARK` from `[LIBERO_90]`
 - `ALGO` from `[multitask]`
-- `POLICY` from `[bc_fooundation_policy_fft, bc_fooundation_policy_frozen]`
+- `POLICY` from `[bc_foundation_policy_fft, bc_foundation_policy_frozen]`
 
 We provide the template script of pretraining as follows:
 
@@ -53,7 +53,7 @@ sh exp_scripts/pretraining_scripts/run_chunkonlyfft_base_clip.sh
 
 - `BENCHMARK` from `[LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_10]`
 - `ALGO` from `[base, er, ewc, packnet, lotus, l2m, iscil, tail, dmpel]`
-- `POLICY` from `[bc_fooundation_policy_fft, bc_fooundation_policy_frozen, bc_hierarchical_policy, bc_foundation_tail_policy, bc_foundation_l2m_policy, bc_foundation_iscil_policy, bc_foundation_dmpel_policy]`
+- `POLICY` from `[bc_foundation_policy_fft, bc_foundation_policy_frozen, bc_hierarchical_policy, bc_foundation_tail_policy, bc_foundation_l2m_policy, bc_foundation_iscil_policy, bc_foundation_dmpel_policy]`
 
 We provide the scripts to reproduce results in the paper in `exp_scripts/lifelong_scripts`. For example, we can evaluate DMPEL in LIBERO-Goal by running:
 
