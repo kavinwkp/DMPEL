@@ -25,7 +25,7 @@ t_lora_layer_list: 'all'
 fullft: false
 lora_dropout: 0.15
 merge_AB: 'weight' # 'output' or 'weight'
-tune_bias: true
+tune_bias: false
 
 init_pool_size: 0
 moe_topk: 3
