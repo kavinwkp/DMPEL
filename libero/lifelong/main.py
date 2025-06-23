@@ -497,15 +497,6 @@ def main(hydra_cfg):
             
             algo.train()
             t0 = time.time()
-
-            # if cfg.lifelong.algo == "DMPEL":
-            #     algo.start_task(i, datasets[i])
-            #     if cfg.use_ddp:
-            #         device = int(os.environ["LOCAL_RANK"])
-            #         torch.cuda.set_device(device)
-            #         algo = CustomDDP(algo.to(device), device_ids=[device], output_device=device)
-            #     else:
-            #         algo = safe_device(algo, cfg.device)
             
             s_fwd, l_fwd = algo.learn_one_task(
                 datasets[i], i, benchmark, result_summary
