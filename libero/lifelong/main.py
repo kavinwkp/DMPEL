@@ -245,8 +245,6 @@ def main(hydra_cfg):
             json.dump(cfg, f, cls=NpEncoder, indent=4)
     
     if cfg.lifelong.algo == "Multitask":
-        for _ in range(10):
-            algo.policy.add_new_and_freeze_previous(algo.cfg.policy.ll_expert_per_task)
         algo.train()
         s_fwd, l_fwd = algo.learn_all_tasks(datasets, benchmark, result_summary)
         result_summary["L_fwd"][-1] = l_fwd
