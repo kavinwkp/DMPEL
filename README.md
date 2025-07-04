@@ -62,3 +62,12 @@ sh exp_scripts/lifelong_scripts/dmpel.sh
 ```
 
 Note that the pretrained model path should be the same as the final checkpoint you saved during pretraining. We also provide our [pretraining checkpoint](https://huggingface.co/leiyuheng/DMPEL/tree/main) to facilitate the replication of results presented in the main paper.
+
+## Acknowledgements
+
+This codebase is built with reference to the following repositories:
+
+* [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO)
+* [L2M](https://github.com/ml-jku/L2M)
+* [LOTUS](https://github.com/UT-Austin-RPL/Lotus)
+* [IsCiL](https://github.com/L2dulgi/IsCiL)
