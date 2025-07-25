@@ -76,7 +76,7 @@ class TransformerFeedForwardNN(nn.Module):
         # Remember the residual connection
         layers = [
             nn.Linear(dim, hidden_dim),
-            nn.GELU('tanh'),
+            nn.GELU('tanh'),    # TODO: add 'tanh'
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, dim),
             nn.Dropout(dropout),
@@ -84,7 +84,7 @@ class TransformerFeedForwardNN(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x, idx=None):
-        if isinstance(self.net, L2MLoRA):
+        if isinstance(self.net, L2MLoRA):   # TODO
             return self.net(x, idx)
         else:
             return self.net(x)
@@ -209,28 +209,31 @@ class TransformerDecoder(nn.Module):
         self.seq_len = None
         self.num_elements = None
         self.mask = None
-        self.use_lora = use_lora
-        self.fullft = fullft
+        self.use_lora = use_lora    # "LoRAqkv"
+        self.fullft = fullft        # false
         for param in self.parameters():
             param.requires_grad = fullft
+        self.lora_cfg = lora_cfg
+
+    def init_lora(self):
         if self.use_lora == "None":
             pass
         else:
-            self.lora_rank = lora_cfg.rank
-            if lora_cfg.lora_layers_list == "all":
+            self.lora_rank = self.lora_cfg.rank  # 16
+            if self.lora_cfg.lora_layers_list == "all":
                 self.lora_layers_list = list(range(len(self.layers)))
             else:
-                self.lora_layers_list = lora_cfg.lora_layers_list
+                self.lora_layers_list = self.lora_cfg.lora_layers_list
             assert isinstance(self.lora_layers_list, list)
             for i, layer in enumerate(self.layers):
                 if i in self.lora_layers_list:
                     orig_qkv = layer[1].qkv
-                    dim = orig_qkv.in_features
+                    dim = orig_qkv.in_features  # 768
                     if self.use_lora == "LoRAqkv":
                         qkv_lora = LoRAqkv(orig_qkv, dim, self.lora_rank)
                         setattr(layer[1], 'qkv', qkv_lora)
                     elif self.use_lora == "L2MLoRAqkv":
-                        self.pool_size = lora_cfg.pool_size
+                        self.pool_size = self.lora_cfg.pool_size
                         qkv_lora = L2MLoRAqkv(orig_qkv, self.pool_size, dim, self.lora_rank)
                         setattr(layer[1], 'qkv', qkv_lora)
 
@@ -268,7 +271,7 @@ class TransformerDecoder(nn.Module):
                 self.attention_output[layer_idx] = att.att_weights
             x = x + self.drop_path(ff(ff_norm(x)))
         return x
-    
+
     @property
     def device(self):
         return next(self.parameters()).device

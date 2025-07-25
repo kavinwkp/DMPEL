@@ -285,22 +285,25 @@ class CLIPImageEncoder(nn.Module):
         self.use_intermediate = use_intermediate
         for param in self.model.parameters():
             param.requires_grad = self.fullft
+        self.lora_cfg = lora_cfg
+
+    def init_lora(self):
         if self.use_lora == "None":
             pass
         else:
             # lora_cfg = cfg.policy.image_encoder.adapter
-            self.lora_rank = lora_cfg.rank
-            if lora_cfg.lora_layers_list == "all":
+            self.lora_rank = self.lora_cfg.rank
+            if self.lora_cfg.lora_layers_list == "all":
                 self.lora_layers_list = list(range(len(self.model.blocks)))
             else:
-                self.lora_layers_list = lora_cfg.lora_layers_list
+                self.lora_layers_list = self.lora_cfg.lora_layers_list
             assert isinstance(self.lora_layers_list, list)
             for i, block in enumerate(self.model.blocks):
                 if i in self.lora_layers_list:
                     orig_qkv = block.attn.qkv
                     dim = orig_qkv.in_features
                     if self.use_lora == "L2MLoRAqkv":
-                        self.pool_size = lora_cfg.pool_size
+                        self.pool_size = self.lora_cfg.pool_size
                         qkv_lora = L2MLoRAqkv(orig_qkv, self.pool_size, dim, self.lora_rank)
                     elif self.use_lora == "LoRAqkv":
                         qkv_lora = LoRAqkv(orig_qkv, dim, self.lora_rank)

@@ -74,14 +74,17 @@ class ClipTextEncoder(nn.Module):
             param.requires_grad = fullft
         for param in self.post_proj.parameters():
             param.requires_grad = fullft
+        self.lora_cfg = lora_cfg
+
+    def init_lora(self):
         if self.use_lora == "None":
             pass
         else:
-            self.lora_rank = lora_cfg.rank
-            if lora_cfg.lora_layers_list == "all":
+            self.lora_rank = self.lora_cfg.rank
+            if self.lora_cfg.lora_layers_list == "all":
                 self.lora_layers_list = list(range(len(self.model.encoder.layers)))
             else:
-                self.lora_layers_list = lora_cfg.lora_layers_list
+                self.lora_layers_list = self.lora_cfg.lora_layers_list
             assert isinstance(self.lora_layers_list, list)
             for i, block in enumerate(self.model.encoder.layers):
                 if i in self.lora_layers_list:
@@ -89,7 +92,7 @@ class ClipTextEncoder(nn.Module):
                     orig_v = block.self_attn.v_proj
                     dim = orig_q.in_features
                     if self.use_lora == "L2MLoRA":
-                        self.pool_size = lora_cfg.pool_size
+                        self.pool_size = self.lora_cfg.pool_size
                         lora_q = L2MLoRA(orig_q, self.pool_size, dim, self.lora_rank)
                         lora_v = L2MLoRA(orig_v, self.pool_size, dim, self.lora_rank)
                     elif self.use_lora == "LoRA":
