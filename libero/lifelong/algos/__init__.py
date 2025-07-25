@@ -10,3 +10,4 @@ from libero.lifelong.algos.tail import TAIL
 from libero.lifelong.algos.l2m import L2M
 from libero.lifelong.algos.iscil import ISCIL
 from libero.lifelong.algos.dmpel import DMPEL
+from libero.lifelong.algos.acil import ACILLearner

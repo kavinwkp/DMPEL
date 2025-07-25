@@ -8,3 +8,4 @@ from libero.lifelong.models.bc_foundation_tail_policy import BCFoundationTailPol
 from libero.lifelong.models.bc_foundation_l2m_policy import BCFoundationL2MPolicy
 from libero.lifelong.models.bc_foundation_iscil_policy import BCFoundationISCILPolicy
 from libero.lifelong.models.bc_foundation_dmpel_policy import BCFoundationDmpelPolicy
+from libero.lifelong.models.AnalyticLinear import ACIL

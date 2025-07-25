@@ -1,0 +1,3 @@
+algo: ACILLearner
+moe_attn_recall_epochs: 10
+moe_attn_recall_sample_ratio: 1.0
