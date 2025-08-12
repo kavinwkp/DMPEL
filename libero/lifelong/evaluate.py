@@ -100,7 +100,8 @@ def parse_args():
         # choices=["bc_rnn_policy", "bc_transformer_policy", "bc_vilt_policy"],
     )
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--ep", type=int, help="epoch number of which .pth")
+    parser.add_argument("--model", type=int, required=True)
+    parser.add_argument("--ep", type=int, help="epoch number of which .pth", default=0)
     # parser.add_argument("--load_task", type=int, help="for single task")
     parser.add_argument("--device_id", type=int, default=0)
     parser.add_argument("--save-videos", action="store_true")
@@ -122,42 +123,9 @@ def parse_args():
 
 def main(args):
     control_seed(args.seed)
-    # args = parse_args()
-    # e.g., experiments/LIBERO_SPATIAL/Multitask/BCRNNPolicy_seed100/
 
-    # experiment_dir = os.path.join(
-    #     args.experiment_dir,
-    #     f"{benchmark_map[args.benchmark]}/"
-    #     + f"{algo_map[args.algo]}/"
-    #     + f"{policy_map[args.policy]}_seed{args.seed}",
-    # )
-    # experiment_dir = os.path.join(
-    #     args.experiment_dir,
-    #     f"{args.benchmark}/"
-    #     + f"{algo_map[args.algo]}/"
-    #     + f"{policy_map[args.policy]}_seed{args.seed}",
-    # )
-    # experiment_dir = args.experiment_dir
 
-    # find the checkpoint
-    # experiment_id = 0
-    # import ipdb; ipdb.set_trace()
-    # for path in Path(experiment_dir).glob("run_*"):
-    #     if not path.is_dir():
-    #         continue
-    #     try:
-    #         folder_id = int(str(path).split("run_")[-1])
-    #         if folder_id > experiment_id:
-    #             experiment_id = folder_id
-    #     except BaseException:
-    #         pass
-    # if experiment_id == 0:
-    #     print(f"[error] cannot find the checkpoint under {experiment_dir}")
-    #     sys.exit(0)
-
-    # run_folder = os.path.join(experiment_dir, f"run_{experiment_id:03d}")
-
-    model = 4
+    model = args.model
 
     run_folder = args.experiment_dir
     try:
@@ -165,8 +133,10 @@ def main(args):
             model_path = os.path.join(run_folder, f"multitask_model_ep{args.ep}.pth")
             sd, cfg, previous_mask = torch_load_model(model_path, map_location=args.device_id)
         else:
-            # model_path = os.path.join(run_folder, f"task{args.task_id}_model.pth")
-            model_path = os.path.join(run_folder, f"task{model}_model.pth")
+            if args.ep == 0:
+                model_path = os.path.join(run_folder, f"task{model}_model.pth")
+            else:
+                model_path = os.path.join(run_folder, f"task{model}_model_ep{args.ep}.pth")
             sd, cfg, previous_mask = torch_load_model(model_path, map_location=args.device_id)
     except:
         print(f"[error] cannot find the checkpoint at {str(model_path)}")
@@ -199,12 +169,18 @@ def main(args):
         # print(algo.policy)
         for i in range(model + 1):
             algo.policy.add_new_and_freeze_previous(add_expert_num=1)
-        algo = safe_device(algo, cfg.device)
+        # algo = safe_device(algo, cfg.device)
     elif cfg.lifelong.algo == "TAIL":
         algo.policy.init_lora()
 
+    algo = safe_device(algo, cfg.device)
     algo.policy.load_state_dict(sd, strict=True)
 
+    # if cfg.lifelong.algo == "TAIL":   # acil
+    # algo.policy.init_policy_head()
+    # policy_head_path = os.path.join(run_folder, f"policy{model}_head.pth")
+    # sd_policy_head, cfg, previous_mask = torch_load_model(policy_head_path, map_location=args.device_id)
+    # algo.policy.policy_head.load_state_dict(sd_policy_head)
 
     if cfg.lifelong.algo == "ACILLearner":
         algo.policy.init_router()
@@ -289,7 +265,7 @@ def main(args):
             "camera_widths": cfg.data.img_w,
         }
 
-        env_num = 5
+        env_num = 10
         env = SubprocVectorEnv(
             [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
         )
@@ -302,6 +278,7 @@ def main(args):
         )
         init_states = torch.load(init_states_path)
         indices = np.arange(env_num) % init_states.shape[0]
+        # indices = np.arange(10, env_num+10) % init_states.shape[0]
         init_states_ = init_states[indices]
 
         dones = [False] * env_num
@@ -348,6 +325,36 @@ def main(args):
         with open(save_folder, "w") as f:
             json.dump(eval_stats, f, cls=NpEncoder, indent=4)
 
+    # print(algo.policy.expert_count)
+
+    # combined = torch.cat(algo.policy.expert_count, dim=0)
+    # print(combined)
+    # # 统计每一列中0、1、2、3的出现次数
+    # counts = torch.zeros((10, combined.shape[1]), dtype=torch.int64)  # (10, 6)
+    #
+    # for j in range(combined.shape[1]):
+    #     col = combined[:, j]
+    #     counts[:, j] = torch.bincount(col, minlength=10)
+    #
+    # print("\n每一列中0、1、2、3的出现次数：")
+    # print(counts)
+    #
+    # num_splits = combined.shape[1] // 6
+    # # print(num_splits)
+    # new_array = torch.zeros((counts.shape[0], 6), dtype=torch.float32)
+    #
+    # for i in range(6):
+    #     start_col = i * num_splits
+    #     end_col = start_col + num_splits
+    #     summed = torch.sum(counts[:, start_col:end_col], dim=1)
+    #     new_array[:, i] = summed
+    # # print(new_array)
+    #
+    # total_elements_per_column = combined.shape[0]
+    #
+    # frequencies = new_array / total_elements_per_column
+    # print(frequencies)
+
     print(f"[info] finish for ckpt at {run_folder} in {t.get_elapsed_time()} sec for rollouts")
     print(f"Results are saved at {save_folder}")
     print(test_loss, success_rate)
@@ -358,9 +365,12 @@ if __name__ == "__main__":
     # main()
     args = parse_args()
     success_ep = []
-    # for i in range(1):
+    # task_id = args.task_id + 1
+    # for i in range(task_id):
     #     args.task_id = i
     success_ep.append(main(args))
     avg_success_ep = sum(success_ep) / len(success_ep)
     print(f"[info] success_rate: {success_ep}")
     print(f"[info] average success_rate: {avg_success_ep}")
+    print(f"############## {args.task_id} ############## ")
+    print()

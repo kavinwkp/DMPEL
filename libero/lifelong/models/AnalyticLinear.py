@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from typing import Optional, Union
+from typing import Optional, Union, Callable
 from abc import ABCMeta, abstractmethod
 import math
 
+activation_t = Union[Callable[[torch.Tensor], torch.Tensor], torch.nn.Module]
 
 
 class AnalyticLinear(torch.nn.Linear, metaclass=ABCMeta):
@@ -92,16 +93,16 @@ class RecursiveLinear(AnalyticLinear):
         # if self.bias:
         #     X = torch.cat((X, torch.ones(X.shape[0], 1).to(X)), dim=-1)
 
-        # num_targets = Y.shape[1]    # 17
-        # if num_targets > self.out_features:     # init 17 > 0
-        #     increment_size = num_targets - self.out_features    # 17
-        #     print(f"increment_size: {increment_size}")
-        #     tail = torch.zeros((self.weight.shape[0], increment_size)).to(self.weight)  # (8192, 17)
-        #     self.weight = torch.cat((self.weight, tail), dim=1)     # (8192, 17)
-        # elif num_targets < self.out_features:
-        #     increment_size = self.out_features - num_targets
-        #     tail = torch.zeros((Y.shape[0], increment_size)).to(Y)
-        #     Y = torch.cat((Y, tail), dim=1)
+        num_targets = Y.shape[1]    # 6
+        if num_targets > self.out_features:     # init 6 > 0
+            increment_size = num_targets - self.out_features    # 6
+            print(f"increment_size: {increment_size}")
+            tail = torch.zeros((self.weight.shape[0], increment_size)).to(self.weight)  # (8192, 17)
+            self.weight = torch.cat((self.weight, tail), dim=1)     # (8192, 17)
+        elif num_targets < self.out_features:
+            increment_size = self.out_features - num_targets
+            tail = torch.zeros((Y.shape[0], increment_size)).to(Y)
+            Y = torch.cat((Y, tail), dim=1)
 
         # Please update your PyTorch & CUDA if the `cusolver error` occurs.
         # If you insist on using this version, doing the `torch.inverse` on CPUs might help.
@@ -163,7 +164,7 @@ class ACIL(torch.nn.Module):
     def __init__(
         self,
         backbone_output_size,
-        backbone=torch.nn.Flatten(),
+        backbone=None,
         buffer_size=8192,
         out_features=0,
         gamma=1e-3,
@@ -257,6 +258,75 @@ class ACIL(torch.nn.Module):
             action = self.backbone.skill_policies[self.current_subtask_id].get_action(data)
 
         return action
+
+
+class DSAL(torch.nn.Module):
+    def __init__(
+        self,
+        backbone_output_size: int,
+        backbone: Callable[[torch.Tensor], torch.Tensor] = torch.nn.Flatten(),
+        buffer_size: int = 8192,
+        out_features: int = 0,
+        gamma_main: float = 1e-3,
+        gamma_comp: float = 1e-3,
+        C: float = 1,
+        activation_main: activation_t = torch.relu,
+        activation_comp: activation_t = torch.tanh,
+        device=None,
+        dtype=torch.double,
+    ) -> None:
+        super().__init__()
+        factory_kwargs = {"device": device, "dtype": dtype}
+        # self.backbone = backbone
+        # self.buffer_size = buffer_size
+        self.buffer = RandomBuffer(
+            backbone_output_size,
+            buffer_size,
+            activation=torch.nn.ReLU(),
+            **factory_kwargs
+        )
+        # The main stream
+        self.activation_main = activation_main
+        self.main_stream = RecursiveLinear(buffer_size, out_features, gamma_main, **factory_kwargs)
+        # The compensation stream
+        self.C = C
+        self.activation_comp = activation_comp
+        self.comp_stream = RecursiveLinear(buffer_size, out_features, gamma_comp, **factory_kwargs)
+        self.eval()
+
+    @torch.no_grad()
+    def forward(self, data):
+        X = self.buffer(data)
+        X_main = self.main_stream(self.activation_main(X))
+        X_comp = self.comp_stream(self.activation_comp(X))
+        return X_main + self.C * X_comp
+
+    @torch.no_grad()
+    def fit(self, X, Y, increase_size=0):
+        # num_classes = max(self.main_stream.out_features, int(y.max().item()) + 1)
+        # Y_main = torch.nn.functional.one_hot(y, num_classes=num_classes)
+
+        X = self.buffer(X)
+        Y_main = Y
+
+        # Train the main stream
+        X_main = self.activation_main(X)
+        self.main_stream.fit(X_main, Y_main)
+        self.main_stream.update()
+
+        # Previous label cleansing (PLC)
+        Y_comp = Y_main - self.main_stream(X_main)
+        Y_comp[:, :-increase_size] = 0
+
+        # Train the compensation stream
+        X_comp = self.activation_comp(X)
+        self.comp_stream.fit(X_comp, Y_comp)
+
+    @torch.no_grad()
+    def update(self):
+        self.main_stream.update()
+        self.comp_stream.update()
+
 
 
 if __name__ == '__main__':

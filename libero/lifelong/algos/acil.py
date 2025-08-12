@@ -29,6 +29,8 @@ from torch.utils.tensorboard import SummaryWriter
 class ACILLearner(Sequential):
     def __init__(self, n_tasks, cfg, **policy_kwargs):
         super().__init__(n_tasks=n_tasks, cfg=cfg, **policy_kwargs)
+        self.initialized = False
+        self.buffer_size = 8192
 
     def start_task(self, task):
         self.current_task = task
@@ -40,15 +42,23 @@ class ACILLearner(Sequential):
         print("[info] start update acil router")
         # self.policy.init_router()
 
-        if task_id == 0:
-            self.acil_router = ACIL(
-                backbone_output_size=2057,
-                buffer_size=8192,
-                out_features=60,
-                gamma=0.1,
-                device=self.cfg.device,
-                dtype=torch.double)     # TODO: don't change to float32
-            print(self.acil_router)
+
+        out_features = 6 * (self.policy.moe_router.pool_size - 1)
+
+        self.acil_router = ACIL(
+            backbone_output_size=2057,
+            buffer_size=8192,
+            out_features=out_features,
+            gamma=0.1,
+            device=self.cfg.device,
+            dtype=torch.double)     # TODO: don't change to float32
+        print(self.acil_router)
+
+
+        if task_id > 0:
+            router_checkpoint_name = f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}/run_00{task_id-1}/seed_100/acil{task_id-1}_router.pth"
+            self.acil_router.load_state_dict(torch_load_model(router_checkpoint_name)[0])
+            print(f'[info] load router from {router_checkpoint_name}')
 
         train_dataloader = DataLoader(
             dataset,
@@ -64,15 +74,19 @@ class ACILLearner(Sequential):
             # print(data["obs"]["agentview_rgb"].shape)
             query_in, coeff = self.policy.calc(data)    # TODO: coeff before topk
             # print(query_in.shape)       # (bs, 2057)
-            # print(topk_attn_norm.shape) # (bs, 6*k)
+            # print(coeff.shape) # (bs, 6*k)
 
+            # TODO: for incremental size
             bs = query_in.shape[0]
+            coeff = coeff.reshape(bs, 6, -1)    # (bs, 6, k)
+            coeff = coeff.transpose(1, 2)       # (bs, k, 6)
+            Y = coeff.reshape(bs, -1)           # (bs, 6*k) e.g. [1,10,2,20,3,30] -> [1,2,3,10,20,30]
 
-            coeff = coeff.reshape(bs, 6, -1)
-            zeros = torch.zeros((bs, 6, 10 - coeff.shape[2]), dtype=coeff.dtype, device=coeff.device)
-            Y = torch.cat((coeff, zeros), dim=-1).reshape(bs, -1)  # (bs,60)
+            # bs = query_in.shape[0]
+            # coeff = coeff.reshape(bs, 6, -1)
+            # zeros = torch.zeros((bs, 6, 10 - coeff.shape[2]), dtype=coeff.dtype, device=coeff.device)
+            # Y = torch.cat((coeff, zeros), dim=-1).reshape(bs, -1)  # (bs,60)
 
-            # self.acil_router.fit(query_in, topk_attn_norm)
             self.acil_router.fit(query_in, Y)
 
             t1 = time.time()
@@ -220,10 +234,19 @@ class ACILLearner(Sequential):
         idx_at_best_succ = 0
 
         prev_success_rate = -1.0
+        prev_train_loss = 1e5
         # best_state_dict = self.policy.state_dict()  # currently save the best model
 
         task = benchmark.get_task(task_id)
         task_emb = benchmark.get_task_emb(task_id)
+
+        for _ in range(task_id):
+            self.policy.add_new_and_freeze_previous(self.cfg.policy.ll_expert_per_task)
+
+        # TODO: used to freeze prior task and train current task
+        if task_id > 0:
+            self.policy.load_state_dict(torch_load_model(f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}/run_00{task_id-1}/seed_100/task{task_id-1}_model.pth")[0])
+            print(f'[info] load model from experiments/lifelong/acil/{benchmark.name}/run_00{task_id-1}/seed_100/task{task_id-1}_model.pth')
 
         self.policy.add_new_and_freeze_previous(self.cfg.policy.ll_expert_per_task)
 
@@ -257,10 +280,10 @@ class ACILLearner(Sequential):
 
         for epoch in range(1, self.cfg.train.n_epochs + 1):
 
-            if task_id <= 8:
-                self.policy.load_state_dict(torch_load_model(f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/libero_goal/run_000/seed_100/task{task_id}_model.pth")[0])
-                print(f'[info] load model from {model_checkpoint_name}')
-                break
+            # # TODO: used to train analytic only
+            # self.policy.load_state_dict(torch_load_model(f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}/run_00{task_id}/seed_100/task{task_id}_model.pth")[0])
+            # print(f'[info] load model from experiments/lifelong/acil/{benchmark.name}/run_00{task_id}/seed_100/task{task_id}_model.pth')
+            # break
 
             t0 = time.time()
 
@@ -280,11 +303,15 @@ class ACILLearner(Sequential):
             else:
                 peak_memory = 0
 
-            training_loss_avg /= len(train_dataloader)
+            # training_loss_avg /= len(train_dataloader)
+
+            # TODO: update EMA
+            self.policy.policy_head.ema_step()
+
             print(
                 f'[info] # Batch: {len(train_dataloader)} | Epoch: {epoch:3d} | '
                 f'train loss: {training_loss_avg:5.2f} | '
-                f'time: {(t1 - t0) / 60:4.2f} | Memory utilization: %.3f GB' % peak_memory
+                f'time: {(t1 - t0) / 60:4.2f} | Memory utilization: {peak_memory:.2f} GB'
             )
 
             # if (not self.cfg.use_ddp) or (int(os.environ["RANK"]) == 0):
@@ -292,7 +319,13 @@ class ACILLearner(Sequential):
             #     self.summary_writer.add_scalar("bc/peak_memory", peak_memory, epoch)
 
             if epoch % self.cfg.eval.eval_every == 0:  # evaluate BC loss
+                training_losses.append(training_loss_avg)
+                # if training_loss_avg < prev_train_loss:
+                # model_checkpoint_name = os.path.join(
+                #     self.experiment_dir, f"task{task_id}_model_ep{epoch}.pth"
+                # )
                 torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
+                prev_success_rate = training_loss_avg
 
                 # t0 = time.time()
                 #
@@ -336,6 +369,7 @@ class ACILLearner(Sequential):
                 # )
 
         # self.policy.load_state_dict(torch_load_model(model_checkpoint_name)[0], strict=True)
+        # torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
 
         self.end_task(dataset, task_id, benchmark)
 

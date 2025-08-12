@@ -24,6 +24,7 @@ from libero.lifelong.models.AnalyticLinear import ACIL
 from libero.lifelong.models.bc_foundation_tail_policy import BCFoundationTailPolicy
 from libero.lifelong.models.policy_head import *
 from libero.lifelong.models.bc_transformer_policy import ExtraModalityTokens
+from libero.lifelong.models.diffusion_head import DiffusionPolicy
 
 import time
 
@@ -612,23 +613,29 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             lora_cfg=policy_cfg.adapter,
         )
 
-        policy_head_kwargs = policy_cfg.policy_head.network_kwargs
-        policy_head_kwargs.input_size = self.embed_size
-        policy_head_kwargs.output_size = shape_meta["ac_dim"]
-
-        self.policy_head = eval(policy_cfg.policy_head.network)(
-            **policy_cfg.policy_head.loss_kwargs,
-            **policy_cfg.policy_head.network_kwargs
-        )
-
-        # self.num_queries = cfg.data.seq_len
-        # self.step = 0
+        # policy_head_kwargs = policy_cfg.policy_head.network_kwargs
+        # policy_head_kwargs.input_size = self.embed_size
+        # policy_head_kwargs.output_size = shape_meta["ac_dim"]
         #
+        # self.policy_head = eval(policy_cfg.policy_head.network)(
+        #     **policy_cfg.policy_head.loss_kwargs,
+        #     **policy_cfg.policy_head.network_kwargs
+        # )
+
+        self.num_queries = cfg.data.seq_len
+        self.step = 0
+
         # self.policy_head = nn.Linear(self.embed_size, shape_meta["ac_dim"] * self.num_queries)
-        #
-        # self.temporal_agg = True
-        # if self.temporal_agg:
-        #     self.all_time_actions = torch.zeros((20, 600, 600 + self.num_queries, shape_meta["ac_dim"])).to(cfg.device)
+        self.policy_head = DiffusionPolicy(obs_dim=self.embed_size,
+                                           act_dim=shape_meta["ac_dim"],
+                                           obs_horizon=10,
+                                           pred_horizon=cfg.data.seq_len,
+                                           hidden_dim=self.embed_size,
+                                           num_layers=2,
+                                           policy_type="transformer",
+                                           device=cfg.device)
+
+        self.all_time_actions = torch.zeros((20, 600, 600 + self.num_queries, shape_meta["ac_dim"])).to(cfg.device)
 
         self.latent_queue = []
         self.max_seq_len = policy_cfg.transformer_max_seq_len
@@ -637,6 +644,8 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         self.reshape_transform = lambda x: reshape_transform(
             x, self.image_encoder_spatial[0].h, self.image_encoder_spatial[1].w
         )
+
+        self.expert_count = []
 
     def init_moe_policy(self):
         for k, v in self.named_parameters():
@@ -677,20 +686,71 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
                 moe_linear = MoELoRA(orig_linear, **lora_kwargs)
                 self.fusion_module[i] = moe_linear
 
+        # TODO: diffusion lora
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.encoder[0], **lora_kwargs)
+        self.policy_head.noise_pred_net.encoder[0] = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.encoder[2], **lora_kwargs)
+        self.policy_head.noise_pred_net.encoder[2] = moe_linear
+
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
+
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear1, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[0].linear1 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear2, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[0].linear2 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear1, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[1].linear1 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear2, **lora_kwargs)
+        self.policy_head.noise_pred_net.decoder.layers[1].linear2 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.noise_pred_net.head, **lora_kwargs)
+        self.policy_head.noise_pred_net.head = moe_linear
+
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.encoder[0], **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.encoder[0] = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.encoder[2], **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.encoder[2] = moe_linear
+
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
+
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2 = moe_linear
+        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.head, **lora_kwargs)
+        self.policy_head.ema_noise_pred_net.head = moe_linear
+
         # if isinstance(self.policy_head, nn.Linear):
         #     moe_linear = MoELoRA(self.policy_head, **lora_kwargs)
         #     self.policy_head = moe_linear
 
-        for i, orig_linear in enumerate(self.policy_head.share):
-            if isinstance(orig_linear, nn.Linear):
-                moe_linear = MoELoRA(orig_linear, **lora_kwargs)
-                self.policy_head.share[i] = moe_linear
-        moe_linear = MoELoRA(self.policy_head.mean_layer, **lora_kwargs)
-        self.policy_head.mean_layer = moe_linear
-        moe_linear = MoELoRA(self.policy_head.logstd_layer, **lora_kwargs)
-        self.policy_head.logstd_layer = moe_linear
-        moe_linear = MoELoRA(self.policy_head.logits_layer, **lora_kwargs)
-        self.policy_head.logits_layer = moe_linear
+        # for i, orig_linear in enumerate(self.policy_head.share):
+        #     if isinstance(orig_linear, nn.Linear):
+        #         moe_linear = MoELoRA(orig_linear, **lora_kwargs)
+        #         self.policy_head.share[i] = moe_linear
+        # moe_linear = MoELoRA(self.policy_head.mean_layer, **lora_kwargs)
+        # self.policy_head.mean_layer = moe_linear
+        # moe_linear = MoELoRA(self.policy_head.logstd_layer, **lora_kwargs)
+        # self.policy_head.logstd_layer = moe_linear
+        # moe_linear = MoELoRA(self.policy_head.logits_layer, **lora_kwargs)
+        # self.policy_head.logits_layer = moe_linear
 
         self.use_t_lora = self.policy_cfg.t_lora  # true t is transformer
         self.use_s_lora_image = self.policy_cfg.s_lora_image  # true
@@ -837,41 +897,53 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         self.acil_router = ACIL(
             backbone_output_size=2057,
             buffer_size=8192,
-            out_features=60,
+            out_features=self.pool_size * 6,
             gamma=0.1,
             device=self.cfg.device,
             dtype=torch.double)
+
+        # self.acil_router = GKEAL(
+        #     backbone_output_size=2057,
+        #     buffer_size=8192,
+        #     out_features=60,
+        #     gamma=0.1,
+        #     device=self.cfg.device,
+        #     dtype=torch.double)
         print(self.acil_router)
 
-    def infer_lora(self, query_in, mode='train'):
+    def infer_lora(self, query_in, mode):
         # with amp.autocast('cuda', dtype=torch.float32):
-        coeff, topk_attn_norm_moe, topk_idx = self.moe_router.forward(query_in)
-        topk_attn_norm = topk_attn_norm_moe
-        # print(coeff)
-        # print(topk_attn_norm_moe)
-        # print(topk_idx)
+        if mode == 'train':
+            coeff, topk_attn_norm_moe, topk_idx = self.moe_router.forward(query_in)
+            topk_attn_norm = topk_attn_norm_moe
+        else:
+            bs = query_in.shape[0]
+            topk = min(self.moe_router.moe_topk, self.moe_router.pool_size)
 
-        # bs = query_in.shape[0]
-        # topk = min(self.moe_router.moe_topk, self.moe_router.pool_size)
-        #
-        # coeff = self.acil_router.forward(query_in).to(torch.float32)  # (bs,60)
-        # # print(topk_attn_norm_acil)
-        #
-        # coeff = coeff.reshape(bs, 6, -1)  # (bs, 6, 10)
-        # coeff = coeff[:, :, :self.moe_router.pool_size]  # (bs, 6, 2)
-        # # print(coeff)
-        #
-        # # topk_attn_norm_acil = topk_attn_norm_acil.reshape(bs, -1)   # (bs,12)
-        # # coeff_multi = topk_attn_norm_acil.view(bs, 6, 2)
-        # # print(coeff_multi)
-        # topk_coeff_multi, topk_idx_multi = torch.topk(coeff, k=topk, dim=-1, sorted=False)
-        # # print(topk_idx_multi)
-        # topk_attn_norm_acil = topk_coeff_multi.view(bs, -1)
-        # topk_idx = topk_idx_multi.view(bs, -1)
-        # # print(topk_attn_norm_acil)
-        # # print(topk_idx)
-        #
-        # topk_attn_norm = topk_attn_norm_acil
+            coeff = self.acil_router.forward(query_in).to(torch.float32)  # (bs,60)
+            # print(coeff)
+
+            # TODO: for incremental size
+            coeff = coeff.reshape(bs, -1, 6)    # (bs, k, 6)
+            coeff = coeff.transpose(1, 2)    # (bs, 6, k)
+            mask = (coeff < 0) | (coeff < 0.01)
+            coeff = torch.where(mask, torch.tensor(0.0, dtype=coeff.dtype, device=coeff.device), coeff)
+            # print(coeff)
+
+            # coeff = coeff.reshape(bs, 6, -1)  # (bs, 6, 10)
+            # coeff = coeff[:, :, :self.moe_router.pool_size]  # (bs, 6, 2)
+            # print(coeff)
+
+            # topk_attn_norm_acil = topk_attn_norm_acil.reshape(bs, -1)   # (bs,12)
+            # coeff_multi = topk_attn_norm_acil.view(bs, 6, 2)
+            # print(coeff_multi)
+            topk_coeff_multi, topk_idx_multi = torch.topk(coeff, k=topk, dim=-1, sorted=False)
+            # print(topk_idx_multi)
+            topk_attn_norm_acil = topk_coeff_multi.view(bs, -1)
+            topk_idx = topk_idx_multi.view(bs, -1)
+            # print(topk_attn_norm_acil)
+            # print(topk_idx)
+            topk_attn_norm = topk_attn_norm_acil
 
         if mode == 'save_attn':
             return topk_idx, topk_attn_norm
@@ -899,27 +971,60 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
                     self.fusion_module[i].set_attentions(topk_attn_norm_sep_list['fusion'], topk_idx_sep_list['fusion'])
                 else:
                     self.fusion_module[i].set_attentions(topk_attn_norm, topk_idx)
-        for i, linear in enumerate(self.policy_head.share):
-            if isinstance(linear, MoELoRA):
-                if self.router_coeff_seperate:
-                    self.policy_head.share[i].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-                else:
-                    self.policy_head.share[i].set_attentions(topk_attn_norm, topk_idx)
-        if isinstance(linear, MoELoRA):
-            if self.router_coeff_seperate:
-                self.policy_head.mean_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-            else:
-                self.policy_head.mean_layer.set_attentions(topk_attn_norm, topk_idx)
-        if isinstance(linear, MoELoRA):
-            if self.router_coeff_seperate:
-                self.policy_head.logstd_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-            else:
-                self.policy_head.logstd_layer.set_attentions(topk_attn_norm, topk_idx)
-        if isinstance(linear, MoELoRA):
-            if self.router_coeff_seperate:
-                self.policy_head.logits_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-            else:
-                self.policy_head.logits_layer.set_attentions(topk_attn_norm, topk_idx)
+
+        # TODO: diffusion lora
+        self.policy_head.noise_pred_net.encoder[0].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.encoder[2].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[0].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[0].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[1].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.decoder.layers[1].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.noise_pred_net.head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+
+        self.policy_head.ema_noise_pred_net.encoder[0].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.encoder[2].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        self.policy_head.ema_noise_pred_net.head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+
+        # if isinstance(self.policy_head, MoELoRA):
+        #     if self.router_coeff_seperate:
+        #         self.policy_head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        #     else:
+        #         self.policy_head.set_attentions(topk_attn_norm, topk_idx)
+
+        # for i, linear in enumerate(self.policy_head.share):
+        #     if isinstance(linear, MoELoRA):
+        #         if self.router_coeff_seperate:
+        #             self.policy_head.share[i].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        #         else:
+        #             self.policy_head.share[i].set_attentions(topk_attn_norm, topk_idx)
+        # if isinstance(linear, MoELoRA):
+        #     if self.router_coeff_seperate:
+        #         self.policy_head.mean_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        #     else:
+        #         self.policy_head.mean_layer.set_attentions(topk_attn_norm, topk_idx)
+        # if isinstance(linear, MoELoRA):
+        #     if self.router_coeff_seperate:
+        #         self.policy_head.logstd_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        #     else:
+        #         self.policy_head.logstd_layer.set_attentions(topk_attn_norm, topk_idx)
+        # if isinstance(linear, MoELoRA):
+        #     if self.router_coeff_seperate:
+        #         self.policy_head.logits_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+        #     else:
+        #         self.policy_head.logits_layer.set_attentions(topk_attn_norm, topk_idx)
+
         if self.use_t_lora:
             for i, layer in enumerate(self.temporal_transformer.layers):
                 if isinstance(self.temporal_transformer.layers[i][1].qkv, MoELoRAqkv):
@@ -968,18 +1073,26 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
 
     def forward(self, data):
         layer_feature_list, query_in = self.context_encode(data)
-        topk_idx, topk_attn_norm = self.infer_lora(query_in)
+        topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='train')
         x = self.spatial_encode(data, layer_feature_list)  # (B, T, num_modality, E)
         x = self.temporal_encode(x)  # (B, T, E)
-        dist = self.policy_head(x)
-        return dist, query_in, topk_idx, topk_attn_norm
+        # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs,1,70) -> (bs,10,7)
+        output = self.policy_head(obs_seq=x, action_seq=data["actions"])  # (bs,1,70) -> (bs,10,7)
+        return output, query_in, topk_idx, topk_attn_norm
+        # dist = self.policy_head(x)
+        # return dist, query_in, topk_idx, topk_attn_norm
 
     def compute_loss(self, data, reduction="mean"):
         data = self.preprocess_input(data, train_mode=True)
-        dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
-        bc_loss = self.policy_head.loss_fn(dist, data["actions"], reduction)
+        # dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
+        # bc_loss = F.l1_loss(dist, data["actions"], reduction=reduction)
+        # bc_loss = self.policy_head.loss_fn(dist, data["actions"], reduction)
         # loss = bc_loss
-        return bc_loss
+        output, query_in, topk_idx, topk_attn_norm = self.forward(data)
+        noise_pred = output['noise_pred']
+        noise = output['noise']
+        loss = F.mse_loss(noise_pred, noise, reduction=reduction)
+        return loss
 
     @torch.no_grad()
     def calc(self, data):
@@ -1000,7 +1113,8 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             if len(self.context_queue) > self.max_seq_len:
                 self.context_queue.pop(0)
             query_in = torch.stack(self.context_queue, dim=0).mean(dim=0)  # (B, T, H_all)
-            topk_idx, topk_attn_norm = self.infer_lora(query_in)
+            topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='eval')
+            # self.expert_count.append(topk_attn_norm)
             x = self.spatial_encode(data, layer_feature_list)
             # else:
             #     if self.query_use_proprio:
@@ -1014,15 +1128,34 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             #     if len(self.context_queue) > self.max_seq_len:
             #         self.context_queue.pop(0)
             #     x = self.spatial_encode(data)
-            self.latent_queue.append(x)
-            if len(self.latent_queue) > self.max_seq_len:
-                self.latent_queue.pop(0)
-            x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
+            # self.latent_queue.append(x)
+            # if len(self.latent_queue) > self.max_seq_len:
+            #     self.latent_queue.pop(0)
+            # x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
             x = self.temporal_encode(x)
-            dist = self.policy_head(x[:, -1])
-        action = dist.sample().detach().cpu()
-        self.infer_flag += 1
-        return action.view(action.shape[0], -1).numpy()
+            # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs, 10, 7)
+            # dist = self.policy_head(x[:, -1])
+            action = self.policy_head(obs_seq=x, action_seq=None)  # (bs, 10, 7)
+        # action = dist.sample().detach().cpu()
+        # self.infer_flag += 1
+        # return action.view(action.shape[0], -1).numpy()
+
+        bs = action.shape[0]
+        actions = []
+        for i in range(bs):
+            self.all_time_actions[i, [self.step], self.step: self.step + self.num_queries] = action[[i]]
+            actions_for_curr_step = self.all_time_actions[i, :, self.step]
+            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+            actions_for_curr_step = actions_for_curr_step[actions_populated]
+            k = 0.01
+            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+            exp_weights = exp_weights / exp_weights.sum()
+            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+            action_chunk = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)  # (bs, 7)
+            actions.append(action_chunk)
+        actions = torch.cat(actions, dim=0)
+        self.step += 1
+        return actions.detach().cpu().numpy()  # (bs, 7)
 
     # def recall_moe_attention(self, replayed_query_in, replayed_attn_vector):
     #     bsz = replayed_query_in.shape[0]
@@ -1044,6 +1177,8 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         self.context_queue = []
         self.latent_queue = []
         self.infer_flag = 0
+        self.step = 0
+        self.all_time_actions.zero_()
 
     def add_new_and_freeze_previous(self, add_expert_num):
         self.pool_size += add_expert_num  # 1
@@ -1055,15 +1190,44 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         for i, linear in enumerate(self.fusion_module):
             if isinstance(linear, MoELoRA):
                 self.fusion_module[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        for i, linear in enumerate(self.policy_head.share):
-            if isinstance(linear, MoELoRA):
-                self.policy_head.share[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        if isinstance(self.policy_head.mean_layer, MoELoRA):
-            self.policy_head.mean_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        if isinstance(self.policy_head.logstd_layer, MoELoRA):
-            self.policy_head.logstd_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        if isinstance(self.policy_head.logits_layer, MoELoRA):
-            self.policy_head.logits_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+
+        # TODO: diffusion lora
+        self.policy_head.noise_pred_net.encoder[0].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.encoder[2].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[0].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[0].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[1].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.decoder.layers[1].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.noise_pred_net.head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+
+        self.policy_head.ema_noise_pred_net.encoder[0].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.encoder[2].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        self.policy_head.ema_noise_pred_net.head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+
+        # if isinstance(self.policy_head, MoELoRA):
+        #     self.policy_head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+
+        # for i, linear in enumerate(self.policy_head.share):
+        #     if isinstance(linear, MoELoRA):
+        #         self.policy_head.share[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        # if isinstance(self.policy_head.mean_layer, MoELoRA):
+        #     self.policy_head.mean_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        # if isinstance(self.policy_head.logstd_layer, MoELoRA):
+        #     self.policy_head.logstd_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        # if isinstance(self.policy_head.logits_layer, MoELoRA):
+        #     self.policy_head.logits_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
 
         if self.use_t_lora:
             for i, layer in enumerate(self.temporal_transformer.layers):
