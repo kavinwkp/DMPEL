@@ -265,7 +265,7 @@ def main(args):
             "camera_widths": cfg.data.img_w,
         }
 
-        env_num = 10
+        env_num = 20
         env = SubprocVectorEnv(
             [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
         )
@@ -277,8 +277,8 @@ def main(args):
             cfg.init_states_folder, task.problem_folder, task.init_states_file
         )
         init_states = torch.load(init_states_path)
-        indices = np.arange(env_num) % init_states.shape[0]
-        # indices = np.arange(10, env_num+10) % init_states.shape[0]
+        # indices = np.arange(env_num) % init_states.shape[0]
+        indices = np.arange(10, env_num+10) % init_states.shape[0]
         init_states_ = init_states[indices]
 
         dones = [False] * env_num

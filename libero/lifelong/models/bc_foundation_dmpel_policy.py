@@ -37,502 +37,6 @@ def reshape_transform(tensor, h, w):
 def _convert_image_to_rgb(image):
     return image.convert("RGB")
 
-# class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
-#     """
-#     Input: (o_{t-H}, ... , o_t)
-#     Output: a_t or distribution of a_t
-#     """
-#
-#     def __init__(self, cfg, shape_meta):
-#         super().__init__(cfg, shape_meta)
-#         policy_cfg = cfg.policy
-#         self.policy_cfg = policy_cfg
-#         img_encoder_kwargs = policy_cfg.image_encoder.network_kwargs
-#         img_encoder_kwargs.lora_cfg = policy_cfg.image_encoder.adapter
-#         text_encoder_kwargs = policy_cfg.language_encoder.network_kwargs
-#         text_encoder_kwargs.lora_cfg = policy_cfg.language_encoder.adapter
-#         self.embed_size = policy_cfg.embed_size
-#         self.has_pretrained = policy_cfg.has_pretrained
-#
-#         ### 1. encode image
-#         self.image_encoders = {}
-#
-#         for name in shape_meta["all_shapes"].keys():
-#             if "rgb" in name or "depth" in name:
-#                 self.image_encoders[name] = {
-#                     "input_shape": shape_meta["all_shapes"][name],
-#                 }
-#         self.num_of_image = len(self.image_encoders.keys())
-#
-#         self.image_encoder_spatial = eval(policy_cfg.image_encoder.network)(**img_encoder_kwargs)
-#         self.image_embed_dim = self.image_encoder_spatial.model.embed_dim
-#
-#         ### 2. encode language
-#         self.language_encoder_spatial = eval(policy_cfg.language_encoder.network)(**text_encoder_kwargs)
-#         self.language_embed_dim = self.language_encoder_spatial.model.config.hidden_size
-#         self.frozen_language_emb = None
-#
-#         ### 5. encode extra information (e.g. gripper, joint_state)
-#         self.extra_encoder = ExtraModalityTokens(
-#             use_joint=cfg.data.use_joint,
-#             use_gripper=cfg.data.use_gripper,
-#             use_ee=cfg.data.use_ee,
-#             extra_num_layers=policy_cfg.extra_num_layers,
-#             extra_hidden_size=policy_cfg.extra_hidden_size,
-#             extra_embedding_size=self.embed_size,
-#         )
-#         self.joint_states_dim = 7
-#         self.gripper_states_dim = 2
-#         self.ee_dim = 3
-#
-#         ### 6. FiLM
-#         if self.embed_size == self.image_embed_dim:
-#             pass
-#         else:
-#             self.img_down_mlp = nn.Linear(self.image_embed_dim, self.embed_size)
-#
-#         self.num_of_extra = self.extra_encoder.num_extra
-#
-#         self.num_of_modality = self.num_of_image + self.num_of_extra
-#         self.fusion_module = nn.Sequential(nn.Linear(self.language_embed_dim, policy_cfg.film_hidden_size),
-#                                             nn.GELU('tanh'),
-#                                             nn.Linear(policy_cfg.film_hidden_size, self.embed_size * 2),
-#                                             )
-#
-#         ### 7. define temporal transformer
-#         policy_cfg.temporal_position_encoding.network_kwargs.input_size = self.embed_size
-#         self.temporal_transformer_position_encoding_fn = eval(
-#             policy_cfg.temporal_position_encoding.network
-#         )(**policy_cfg.temporal_position_encoding.network_kwargs)
-#
-#         self.temporal_transformer = TransformerDecoder(
-#             input_size=self.embed_size,
-#             num_layers=policy_cfg.transformer_num_layers,
-#             num_heads=policy_cfg.transformer_num_heads,
-#             head_output_size=policy_cfg.transformer_head_output_size,
-#             mlp_hidden_size=policy_cfg.transformer_mlp_hidden_size,
-#             dropout=policy_cfg.transformer_dropout,
-#             use_lora=policy_cfg.use_lora,
-#             fullft=policy_cfg.fullft,
-#             lora_cfg=policy_cfg.adapter,
-#         )
-#
-#         policy_head_kwargs = policy_cfg.policy_head.network_kwargs
-#         policy_head_kwargs.input_size = self.embed_size
-#         policy_head_kwargs.output_size = shape_meta["ac_dim"]
-#
-#         self.policy_head = eval(policy_cfg.policy_head.network)(
-#             **policy_cfg.policy_head.loss_kwargs,
-#             **policy_cfg.policy_head.network_kwargs
-#         )
-#         self.latent_queue = []
-#         self.max_seq_len = policy_cfg.transformer_max_seq_len
-#
-#         ### 8. reshape transform for attention visualization
-#         self.reshape_transform = lambda x: reshape_transform(
-#             x, self.image_encoder_spatial[0].h, self.image_encoder_spatial[1].w
-#         )
-#
-#     def init_moe_policy(self):
-#         for k, v in self.named_parameters():
-#             v.requires_grad = False
-#         self.task_emb_size = self.policy_cfg.task_emb_size  # 64
-#         self.pool_size = self.policy_cfg.init_pool_size     # 0
-#         self.ll_expert_per_task = self.policy_cfg.ll_expert_per_task    # 1
-#         self.query_use_proprio = self.policy_cfg.query_use_proprio      # true
-#         self.router_coeff_seperate = self.policy_cfg.router_coeff_seperate  # true
-#         self.infer_interval = self.policy_cfg.infer_interval    # 1
-#         self.query_use_mean_img = self.policy_cfg.query_use_mean_img    # true
-#         self.query_use_diff_img = self.policy_cfg.query_use_diff_img    # false
-#         router_in_dim = self.language_embed_dim
-#         if self.query_use_mean_img:
-#             router_in_dim += self.image_embed_dim * 2
-#         if self.query_use_diff_img:
-#             router_in_dim += self.image_embed_dim * 2
-#         if self.query_use_proprio:
-#             router_in_dim += self.joint_states_dim + self.gripper_states_dim
-#         self.moe_router = MoERouterCoeff(in_dim=router_in_dim,
-#                                         hidden_dim=self.policy_cfg.task_emb_net_hidden_size,    # 256
-#                                         cfg=self.policy_cfg)
-#         self.moe_topk = self.policy_cfg.moe_topk    # 3
-#
-#         lora_kwargs = {'rank': self.policy_cfg.adapter.rank,    # 16
-#                         'init_pool_size': self.pool_size,
-#                         'merge_AB': self.policy_cfg.merge_AB,   # 'weight'
-#                         'tune_bias': self.policy_cfg.tune_bias, # false
-#                         'lora_dropout': self.policy_cfg.lora_dropout,   # 0.15
-#                         }
-#         for i, encoder in enumerate(self.extra_encoder.encoders):
-#             for j, orig_linear in enumerate(encoder):
-#                 if isinstance(orig_linear, nn.Linear):
-#                     moe_linear = MoELoRA(orig_linear, **lora_kwargs)
-#                     self.extra_encoder.encoders[i][j] = moe_linear
-#         for i, orig_linear in enumerate(self.fusion_module):
-#             if isinstance(orig_linear, nn.Linear):
-#                 moe_linear = MoELoRA(orig_linear, **lora_kwargs)
-#                 self.fusion_module[i] = moe_linear
-#         for i, orig_linear in enumerate(self.policy_head.share):
-#             if isinstance(orig_linear, nn.Linear):
-#                 moe_linear = MoELoRA(orig_linear, **lora_kwargs)
-#                 self.policy_head.share[i] = moe_linear
-#         moe_linear = MoELoRA(self.policy_head.mean_layer, **lora_kwargs)
-#         self.policy_head.mean_layer = moe_linear
-#         moe_linear = MoELoRA(self.policy_head.logstd_layer, **lora_kwargs)
-#         self.policy_head.logstd_layer = moe_linear
-#         moe_linear = MoELoRA(self.policy_head.logits_layer, **lora_kwargs)
-#         self.policy_head.logits_layer = moe_linear
-#
-#         self.use_t_lora = self.policy_cfg.t_lora    # true t is transformer
-#         self.use_s_lora_image = self.policy_cfg.s_lora_image    # true
-#         self.use_s_lora_text = self.policy_cfg.s_lora_text      # true
-#         if self.policy_cfg.t_lora:
-#             if self.policy_cfg.t_lora_layer_list == "all":
-#                 self.t_lora_layer_list = list(range(len(self.temporal_transformer.layers)))
-#             else:
-#                 self.t_lora_layer_list = self.policy_cfg.t_lora_layer_list
-#             assert isinstance(self.t_lora_layer_list, list)
-#             for i, layer in enumerate(self.temporal_transformer.layers):
-#                 if i in self.t_lora_layer_list:
-#                     orig_qkv = layer[1].qkv
-#                     qkv_lora = MoELoRAqkv(orig_qkv, **lora_kwargs)
-#                     layer[1].qkv = qkv_lora
-#
-#         lora_kwargs['rank'] = int(self.policy_cfg.adapter.rank/2)   # 8
-#         lora_kwargs['tune_bias'] = False
-#         if self.policy_cfg.s_lora_image:
-#             if self.policy_cfg.s_lora_image_layer_list == "all":
-#                 self.s_lora_image_layer_list = list(range(len(self.image_encoder_spatial.model.blocks)))
-#             else:
-#                 self.s_lora_image_layer_list = self.policy_cfg.s_lora_image_layer_list  # [6,7,8,9,10,11]
-#             assert isinstance(self.s_lora_image_layer_list, list)
-#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
-#                 if i in self.s_lora_image_layer_list:
-#                     orig_qkv = layer.attn.qkv
-#                     qkv_lora = MoELoRAqkv(orig_qkv, **lora_kwargs)
-#                     self.image_encoder_spatial.model.blocks[i].attn.qkv = qkv_lora
-#
-#         if self.policy_cfg.s_lora_text:
-#             if self.policy_cfg.s_lora_text_layer_list == "all":
-#                 self.s_lora_text_layer_list = list(range(len(self.language_encoder_spatial.model.encoder.layers)))
-#             else:
-#                 self.s_lora_text_layer_list = self.policy_cfg.s_lora_text_layer_list  # [6,7,8,9,10,11]
-#             assert isinstance(self.s_lora_text_layer_list, list)
-#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
-#                 if i in self.s_lora_text_layer_list:
-#                     orig_q = layer.self_attn.q_proj
-#                     orig_v = layer.self_attn.v_proj
-#                     q_lora = MoELoRA(orig_q, **lora_kwargs)
-#                     v_lora = MoELoRA(orig_v, **lora_kwargs)
-#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.q_proj = q_lora
-#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.v_proj = v_lora
-#
-#     def spatial_encode(self, data, layer_feature_list=None):
-#         if self.use_s_lora_image:
-#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
-#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
-#                     self.image_encoder_spatial.model.blocks[i].attn.qkv.set_use_lora(True)
-#         if self.use_s_lora_text:
-#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
-#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
-#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.q_proj.set_use_lora(True)
-#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
-#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.v_proj.set_use_lora(True)
-#         # 1. encode image
-#         img_encoded_list = {}
-#         for img_name in self.image_encoders.keys():
-#             img = data["obs"][img_name] # (B, T, C, H, W)
-#             B, T = img.shape[:2]
-#             if layer_feature_list is not None:
-#                 img_encoded = TensorUtils.time_distributed(
-#                             layer_feature_list[img_name],
-#                             self.image_encoder_spatial.second_forward_lora,
-#                             layer_index=self.s_lora_image_layer_list[0])
-#             else:
-#                 img_encoded = TensorUtils.time_distributed(
-#                             img, self.image_encoder_spatial.forward)
-#             if self.embed_size == self.image_embed_dim:
-#                 pass
-#             else:
-#                 img_encoded = self.img_down_mlp(img_encoded)
-#             img_encoded_list[img_name] = img_encoded
-#         # 2. encode task_emb
-#         text_tokenzied = data["task_emb"]
-#         text_encoded = self.language_encoder_spatial(text_tokenzied)  # (B, E_clip)
-#
-#         # 3. encode extra
-#         extra = self.extra_encoder(data["obs"])  # (B, T, num_extra, E)
-#         output = extra
-#
-#         for img_name in self.image_encoders.keys():
-#             output = torch.cat([output, img_encoded_list[img_name].unsqueeze(dim=-2)], dim=-2)  # (B, T, num_modality, E)
-#
-#         # 4. film
-#         beta, gamma = torch.split(self.fusion_module(text_encoded).reshape(B, self.embed_size * 2), [self.embed_size, self.embed_size], -1)
-#         beta_all = beta.view(B, 1, 1, self.embed_size).expand(-1, T, self.num_of_modality, -1)
-#         gamma_all = gamma.view(B, 1, 1, self.embed_size).expand(-1, T, self.num_of_modality, -1)
-#
-#         output = (1 + gamma_all) * output + beta_all
-#
-#         return output # (B, T, num_modality, E)
-#
-#     def context_encode(self, data):
-#         if self.use_s_lora_image:
-#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
-#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
-#                     self.image_encoder_spatial.model.blocks[i].attn.qkv.set_use_lora(False)
-#         if self.use_s_lora_text:
-#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
-#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
-#                     layer.self_attn.q_proj.set_use_lora(False)
-#                 if isinstance(layer.self_attn.v_proj, MoELoRA):
-#                     layer.self_attn.v_proj.set_use_lora(False)
-#         # 1. encode image
-#         with torch.no_grad():
-#             img_encoded_list = {}
-#             layer_feature_list = {}
-#             for img_name in self.image_encoders.keys():
-#                 img = data["obs"][img_name] # (B, T, C, H, W)
-#                 B, T = img.shape[:2]
-#                 if self.policy_cfg.s_lora_image:
-#                     img_encoded, layer_feature = TensorUtils.time_distributed(
-#                         img, self.image_encoder_spatial.first_forward_frozen,
-#                         layer_index=self.s_lora_image_layer_list[0]-1)
-#                     layer_feature_list[img_name] = layer_feature
-#                 if self.embed_size == self.image_embed_dim:
-#                     pass
-#                 else:
-#                     img_encoded = self.img_down_mlp(img_encoded)
-#                 img_encoded_list[img_name] = img_encoded
-#
-#             # 2. encode task_emb
-#             text_tokenzied = data["task_emb"]
-#             text_encoded = self.language_encoder_spatial(text_tokenzied)
-#
-#         query_in = text_encoded
-#         for k, v in img_encoded_list.items():
-#             if self.query_use_mean_img:
-#                 img_emb_mean = v.mean(dim=-2)
-#                 query_in = torch.cat([query_in, img_emb_mean], dim=-1)
-#             if self.query_use_diff_img:
-#                 img_emb_diff = v[:,-1,:] - v[:,0,:]
-#                 query_in = torch.cat([query_in, img_emb_diff], dim=-1)
-#         if self.query_use_proprio:
-#             for modality_name in ["joint_states", "gripper_states"]:
-#                 query_proprio = data["obs"][modality_name].mean(dim=-2)
-#                 query_in= torch.cat([query_in, query_proprio], dim=-1)
-#
-#         return layer_feature_list, query_in
-#
-#
-#     def infer_lora(self, query_in, mode='train'):
-#         with amp.autocast('cuda', dtype=torch.float32):
-#             _, topk_attn_norm, topk_idx = self.moe_router.forward(query_in)
-#         if mode == 'save_attn':
-#             return topk_idx, topk_attn_norm
-#
-#         if self.router_coeff_seperate:
-#             bsz = topk_attn_norm.shape[0]
-#             topk_attn_norm_multi = topk_attn_norm.view(bsz, 6, -1)
-#             topk_idx_multi = topk_idx.view(bsz, 6, -1)
-#             topk_attn_norm_sep_list = {}
-#             topk_idx_sep_list = {}
-#             for i, key in zip(range(6), ['img', 'txt', 'extra', 'fusion', 'tem', 'head']):
-#                 topk_attn_norm_sep_list[key] = topk_attn_norm_multi[:, i, :]
-#                 topk_idx_sep_list[key] = topk_idx_multi[:, i, :]
-#
-#         for i, encoder in enumerate(self.extra_encoder.encoders):
-#             for j, linear in enumerate(encoder):
-#                 if isinstance(linear, MoELoRA):
-#                     if self.router_coeff_seperate:
-#                         self.extra_encoder.encoders[i][j].set_attentions(topk_attn_norm_sep_list['extra'], topk_idx_sep_list['extra'])
-#                     else:
-#                         self.extra_encoder.encoders[i][j].set_attentions(topk_attn_norm, topk_idx)
-#         for i, linear in enumerate(self.fusion_module):
-#             if isinstance(linear, MoELoRA):
-#                 if self.router_coeff_seperate:
-#                     self.fusion_module[i].set_attentions(topk_attn_norm_sep_list['fusion'], topk_idx_sep_list['fusion'])
-#                 else:
-#                     self.fusion_module[i].set_attentions(topk_attn_norm, topk_idx)
-#         for i, linear in enumerate(self.policy_head.share):
-#             if isinstance(linear, MoELoRA):
-#                 if self.router_coeff_seperate:
-#                     self.policy_head.share[i].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-#                 else:
-#                     self.policy_head.share[i].set_attentions(topk_attn_norm, topk_idx)
-#         if isinstance(linear, MoELoRA):
-#             if self.router_coeff_seperate:
-#                 self.policy_head.mean_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-#             else:
-#                 self.policy_head.mean_layer.set_attentions(topk_attn_norm, topk_idx)
-#         if isinstance(linear, MoELoRA):
-#             if self.router_coeff_seperate:
-#                 self.policy_head.logstd_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-#             else:
-#                 self.policy_head.logstd_layer.set_attentions(topk_attn_norm, topk_idx)
-#         if isinstance(linear, MoELoRA):
-#             if self.router_coeff_seperate:
-#                 self.policy_head.logits_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-#             else:
-#                 self.policy_head.logits_layer.set_attentions(topk_attn_norm, topk_idx)
-#         if self.use_t_lora:
-#             for i, layer in enumerate(self.temporal_transformer.layers):
-#                 if isinstance(self.temporal_transformer.layers[i][1].qkv, MoELoRAqkv):
-#                     if self.router_coeff_seperate:
-#                         self.temporal_transformer.layers[i][1].qkv.set_attentions(topk_attn_norm_sep_list['tem'], topk_idx_sep_list['tem'])
-#                     else:
-#                         self.temporal_transformer.layers[i][1].qkv.set_attentions(topk_attn_norm, topk_idx)
-#                     layer[1].qkv.set_use_lora(True)
-#
-#         if self.use_s_lora_image:
-#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
-#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
-#                     if self.router_coeff_seperate:
-#                         layer.attn.qkv.set_attentions(topk_attn_norm_sep_list['img'], topk_idx_sep_list['img'])
-#                     else:
-#                         layer.attn.qkv.set_attentions(topk_attn_norm, topk_idx)
-#                     layer.attn.qkv.set_use_lora(True)
-#
-#         if self.use_s_lora_text:
-#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
-#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
-#                     if self.router_coeff_seperate:
-#                         layer.self_attn.q_proj.set_attentions(topk_attn_norm_sep_list['txt'], topk_idx_sep_list['txt'])
-#                     else:
-#                         layer.self_attn.q_proj.set_attentions(topk_attn_norm, topk_idx)
-#                     layer.self_attn.q_proj.set_use_lora(True)
-#                 if isinstance(layer.self_attn.v_proj, MoELoRA):
-#                     if self.router_coeff_seperate:
-#                         layer.self_attn.v_proj.set_attentions(topk_attn_norm_sep_list['txt'], topk_idx_sep_list['txt'])
-#                     else:
-#                         layer.self_attn.v_proj.set_attentions(topk_attn_norm, topk_idx)
-#                     layer.self_attn.v_proj.set_use_lora(True)
-#
-#         return topk_idx, topk_attn_norm
-#
-#     def temporal_encode(self, x):
-#         pos_emb = self.temporal_transformer_position_encoding_fn(x)
-#         x = x + pos_emb.unsqueeze(1)  # (B, T, num_modality, E)
-#         sh = x.shape
-#         self.temporal_transformer.compute_mask(x.shape)
-#
-#         x = TensorUtils.join_dimensions(x, 1, 2)  # (B, T*num_modality, E)
-#         x = self.temporal_transformer(x)
-#         x = x.reshape(*sh)
-#         return x[:, :, 0]  # (B, T, E)
-#
-#     def forward(self, data):
-#         layer_feature_list, query_in = self.context_encode(data)
-#         topk_idx, topk_attn_norm = self.infer_lora(query_in)
-#         x = self.spatial_encode(data, layer_feature_list)  # (B, T, num_modality, E)
-#         x = self.temporal_encode(x)  # (B, T, E)
-#         dist = self.policy_head(x)
-#         return dist, query_in, topk_idx, topk_attn_norm
-#
-#     def compute_loss(self, data, reduction="mean"):
-#         data = self.preprocess_input(data, train_mode=True)
-#         dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
-#         bc_loss = self.policy_head.loss_fn(dist, data["actions"], reduction)
-#         # loss = bc_loss
-#         return bc_loss
-#
-#     def get_action(self, data):
-#         self.eval()
-#         with torch.no_grad():
-#             # with amp.autocast('cuda', dtype=torch.float16):
-#             data = self.preprocess_input(data, train_mode=False)
-#             # if self.infer_flag % self.infer_interval == 0:
-#             layer_feature_list, query_in = self.context_encode(data)
-#             self.context_queue.append(query_in)
-#             if len(self.context_queue) > self.max_seq_len:
-#                 self.context_queue.pop(0)
-#             query_in = torch.stack(self.context_queue, dim=0).mean(dim=0)  # (B, T, H_all)
-#             topk_idx, topk_attn_norm = self.infer_lora(query_in)
-#             x = self.spatial_encode(data, layer_feature_list)
-#             # else:
-#             #     if self.query_use_proprio:
-#             #         query_in = self.context_queue[-1][...,:-(self.joint_states_dim+self.gripper_states_dim)]
-#             #         for modality_name in ["joint_states", "gripper_states"]:
-#             #             query_proprio = data["obs"][modality_name].mean(dim=-2)
-#             #             query_in= torch.cat([query_in, query_proprio], dim=-1)
-#             #     else:
-#             #         query_in = self.context_queue[-1]
-#             #     self.context_queue.append(query_in)
-#             #     if len(self.context_queue) > self.max_seq_len:
-#             #         self.context_queue.pop(0)
-#             #     x = self.spatial_encode(data)
-#             self.latent_queue.append(x)
-#             if len(self.latent_queue) > self.max_seq_len:
-#                 self.latent_queue.pop(0)
-#             x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
-#             x = self.temporal_encode(x)
-#             dist = self.policy_head(x[:, -1])
-#         action = dist.sample().detach().cpu()
-#         self.infer_flag += 1
-#         return action.view(action.shape[0], -1).numpy()
-#
-#     def recall_moe_attention(self, replayed_query_in, replayed_attn_vector):
-#         bsz = replayed_query_in.shape[0]
-#         now_topk_attn_norm, now_topk_idx = self.moe_router.forward(replayed_query_in)
-#         if self.router_coeff_seperate:
-#             topk_attn_norm_multi = now_topk_attn_norm.view(bsz, 6, -1)
-#             topk_idx_multi = now_topk_idx.view(bsz, 6, -1)
-#             now_attn_vector = torch.zeros((bsz, 6, self.pool_size), device=now_topk_attn_norm.device)
-#             for i in range(6):
-#                 now_attn_vector[:, i, :].scatter_(1, topk_idx_multi[:, i, :], topk_attn_norm_multi[:, i, :])
-#             now_attn_vector.view(bsz, -1)
-#         else:
-#             now_attn_vector = torch.zeros((bsz, self.pool_size), device=now_topk_attn_norm.device)
-#             now_attn_vector.scatter_(1, now_topk_idx, now_topk_attn_norm)
-#         replayed_attn_loss = torch.nn.functional.mse_loss(now_attn_vector, replayed_attn_vector)
-#         return replayed_attn_loss, now_attn_vector
-#
-#     def reset(self):
-#         self.context_queue = []
-#         self.latent_queue = []
-#         self.infer_flag = 0
-#
-#     def add_new_and_freeze_previous(self, add_expert_num):
-#         self.pool_size += add_expert_num    # 1
-#         self.moe_router.add_expert(add_expert_num) # if new_task_mean, reinit in the algo
-#         for i, encoder in enumerate(self.extra_encoder.encoders):
-#             for j, linear in enumerate(encoder):
-#                 if isinstance(linear, MoELoRA):
-#                     self.extra_encoder.encoders[i][j].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         for i, linear in enumerate(self.fusion_module):
-#             if isinstance(linear, MoELoRA):
-#                 self.fusion_module[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         for i, linear in enumerate(self.policy_head.share):
-#             if isinstance(linear, MoELoRA):
-#                 self.policy_head.share[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         if isinstance(self.policy_head.mean_layer, MoELoRA):
-#             self.policy_head.mean_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         if isinstance(self.policy_head.logstd_layer, MoELoRA):
-#             self.policy_head.logstd_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         if isinstance(self.policy_head.logits_layer, MoELoRA):
-#             self.policy_head.logits_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#
-#         if self.use_t_lora:
-#             for i, layer in enumerate(self.temporal_transformer.layers):
-#                 if isinstance(self.temporal_transformer.layers[i][1].qkv, MoELoRAqkv):
-#                     self.temporal_transformer.layers[i][1].qkv.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         if self.use_s_lora_image:
-#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
-#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
-#                     self.image_encoder_spatial.model.blocks[i].attn.qkv.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         if self.use_s_lora_text:
-#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
-#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
-#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.q_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#                 if isinstance(layer.self_attn.v_proj, MoELoRA):
-#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.v_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-#         # for name, tensor in self.named_parameters():
-#         #     if tensor.requires_grad:
-#         #         print('{}: {}, {}'.format(name, torch.numel(tensor), tensor.requires_grad))
-#         # total_params = sum(p.numel() for p in self.parameters())
-#         # print("Total parameters: {}".format(total_params))
-#         # trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-#         # print("Trainable parameters: {}".format(trainable_params))
-
 class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
     """
     Input: (o_{t-H}, ... , o_t)
@@ -591,9 +95,9 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
 
         self.num_of_modality = self.num_of_image + self.num_of_extra
         self.fusion_module = nn.Sequential(nn.Linear(self.language_embed_dim, policy_cfg.film_hidden_size),
-                                           nn.GELU('tanh'),
-                                           nn.Linear(policy_cfg.film_hidden_size, self.embed_size * 2),
-                                           )
+                                            nn.GELU('tanh'),
+                                            nn.Linear(policy_cfg.film_hidden_size, self.embed_size * 2),
+                                            )
 
         ### 7. define temporal transformer
         policy_cfg.temporal_position_encoding.network_kwargs.input_size = self.embed_size
@@ -613,30 +117,14 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             lora_cfg=policy_cfg.adapter,
         )
 
-        # policy_head_kwargs = policy_cfg.policy_head.network_kwargs
-        # policy_head_kwargs.input_size = self.embed_size
-        # policy_head_kwargs.output_size = shape_meta["ac_dim"]
-        #
-        # self.policy_head = eval(policy_cfg.policy_head.network)(
-        #     **policy_cfg.policy_head.loss_kwargs,
-        #     **policy_cfg.policy_head.network_kwargs
-        # )
+        policy_head_kwargs = policy_cfg.policy_head.network_kwargs
+        policy_head_kwargs.input_size = self.embed_size
+        policy_head_kwargs.output_size = shape_meta["ac_dim"]
 
-        self.num_queries = cfg.data.seq_len
-        self.step = 0
-
-        # self.policy_head = nn.Linear(self.embed_size, shape_meta["ac_dim"] * self.num_queries)
-        self.policy_head = DiffusionPolicy(obs_dim=self.embed_size,
-                                           act_dim=shape_meta["ac_dim"],
-                                           obs_horizon=10,
-                                           pred_horizon=cfg.data.seq_len,
-                                           hidden_dim=self.embed_size,
-                                           num_layers=2,
-                                           policy_type="transformer",
-                                           device=cfg.device)
-
-        self.all_time_actions = torch.zeros((20, 600, 600 + self.num_queries, shape_meta["ac_dim"])).to(cfg.device)
-
+        self.policy_head = eval(policy_cfg.policy_head.network)(
+            **policy_cfg.policy_head.loss_kwargs,
+            **policy_cfg.policy_head.network_kwargs
+        )
         self.latent_queue = []
         self.max_seq_len = policy_cfg.transformer_max_seq_len
 
@@ -645,19 +133,17 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             x, self.image_encoder_spatial[0].h, self.image_encoder_spatial[1].w
         )
 
-        self.expert_count = []
-
     def init_moe_policy(self):
         for k, v in self.named_parameters():
             v.requires_grad = False
         self.task_emb_size = self.policy_cfg.task_emb_size  # 64
-        self.pool_size = self.policy_cfg.init_pool_size  # 0
-        self.ll_expert_per_task = self.policy_cfg.ll_expert_per_task  # 1
-        self.query_use_proprio = self.policy_cfg.query_use_proprio  # true
+        self.pool_size = self.policy_cfg.init_pool_size     # 0
+        self.ll_expert_per_task = self.policy_cfg.ll_expert_per_task    # 1
+        self.query_use_proprio = self.policy_cfg.query_use_proprio      # true
         self.router_coeff_seperate = self.policy_cfg.router_coeff_seperate  # true
-        self.infer_interval = self.policy_cfg.infer_interval  # 1
-        self.query_use_mean_img = self.policy_cfg.query_use_mean_img  # true
-        self.query_use_diff_img = self.policy_cfg.query_use_diff_img  # false
+        self.infer_interval = self.policy_cfg.infer_interval    # 1
+        self.query_use_mean_img = self.policy_cfg.query_use_mean_img    # true
+        self.query_use_diff_img = self.policy_cfg.query_use_diff_img    # false
         router_in_dim = self.language_embed_dim
         if self.query_use_mean_img:
             router_in_dim += self.image_embed_dim * 2
@@ -666,16 +152,16 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         if self.query_use_proprio:
             router_in_dim += self.joint_states_dim + self.gripper_states_dim
         self.moe_router = MoERouterCoeff(in_dim=router_in_dim,
-                                         hidden_dim=self.policy_cfg.task_emb_net_hidden_size,  # 256
-                                         cfg=self.policy_cfg)
-        self.moe_topk = self.policy_cfg.moe_topk  # 3
+                                        hidden_dim=self.policy_cfg.task_emb_net_hidden_size,    # 256
+                                        cfg=self.policy_cfg)
+        self.moe_topk = self.policy_cfg.moe_topk    # 3
 
-        lora_kwargs = {'rank': self.policy_cfg.adapter.rank,  # 16
-                       'init_pool_size': self.pool_size,
-                       'merge_AB': self.policy_cfg.merge_AB,  # 'weight'
-                       'tune_bias': self.policy_cfg.tune_bias,  # false
-                       'lora_dropout': self.policy_cfg.lora_dropout,  # 0.15
-                       }
+        lora_kwargs = {'rank': self.policy_cfg.adapter.rank,    # 16
+                        'init_pool_size': self.pool_size,
+                        'merge_AB': self.policy_cfg.merge_AB,   # 'weight'
+                        'tune_bias': self.policy_cfg.tune_bias, # false
+                        'lora_dropout': self.policy_cfg.lora_dropout,   # 0.15
+                        }
         for i, encoder in enumerate(self.extra_encoder.encoders):
             for j, orig_linear in enumerate(encoder):
                 if isinstance(orig_linear, nn.Linear):
@@ -685,76 +171,20 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             if isinstance(orig_linear, nn.Linear):
                 moe_linear = MoELoRA(orig_linear, **lora_kwargs)
                 self.fusion_module[i] = moe_linear
+        for i, orig_linear in enumerate(self.policy_head.share):
+            if isinstance(orig_linear, nn.Linear):
+                moe_linear = MoELoRA(orig_linear, **lora_kwargs)
+                self.policy_head.share[i] = moe_linear
+        moe_linear = MoELoRA(self.policy_head.mean_layer, **lora_kwargs)
+        self.policy_head.mean_layer = moe_linear
+        moe_linear = MoELoRA(self.policy_head.logstd_layer, **lora_kwargs)
+        self.policy_head.logstd_layer = moe_linear
+        moe_linear = MoELoRA(self.policy_head.logits_layer, **lora_kwargs)
+        self.policy_head.logits_layer = moe_linear
 
-        # TODO: diffusion lora
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.encoder[0], **lora_kwargs)
-        self.policy_head.noise_pred_net.encoder[0] = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.encoder[2], **lora_kwargs)
-        self.policy_head.noise_pred_net.encoder[2] = moe_linear
-
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
-
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear1, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[0].linear1 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear2, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[0].linear2 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear1, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[1].linear1 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear2, **lora_kwargs)
-        self.policy_head.noise_pred_net.decoder.layers[1].linear2 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.noise_pred_net.head, **lora_kwargs)
-        self.policy_head.noise_pred_net.head = moe_linear
-
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.encoder[0], **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.encoder[0] = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.encoder[2], **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.encoder[2] = moe_linear
-
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
-
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2 = moe_linear
-        moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.head, **lora_kwargs)
-        self.policy_head.ema_noise_pred_net.head = moe_linear
-
-        # if isinstance(self.policy_head, nn.Linear):
-        #     moe_linear = MoELoRA(self.policy_head, **lora_kwargs)
-        #     self.policy_head = moe_linear
-
-        # for i, orig_linear in enumerate(self.policy_head.share):
-        #     if isinstance(orig_linear, nn.Linear):
-        #         moe_linear = MoELoRA(orig_linear, **lora_kwargs)
-        #         self.policy_head.share[i] = moe_linear
-        # moe_linear = MoELoRA(self.policy_head.mean_layer, **lora_kwargs)
-        # self.policy_head.mean_layer = moe_linear
-        # moe_linear = MoELoRA(self.policy_head.logstd_layer, **lora_kwargs)
-        # self.policy_head.logstd_layer = moe_linear
-        # moe_linear = MoELoRA(self.policy_head.logits_layer, **lora_kwargs)
-        # self.policy_head.logits_layer = moe_linear
-
-        self.use_t_lora = self.policy_cfg.t_lora  # true t is transformer
-        self.use_s_lora_image = self.policy_cfg.s_lora_image  # true
-        self.use_s_lora_text = self.policy_cfg.s_lora_text  # true
+        self.use_t_lora = self.policy_cfg.t_lora    # true t is transformer
+        self.use_s_lora_image = self.policy_cfg.s_lora_image    # true
+        self.use_s_lora_text = self.policy_cfg.s_lora_text      # true
         if self.policy_cfg.t_lora:
             if self.policy_cfg.t_lora_layer_list == "all":
                 self.t_lora_layer_list = list(range(len(self.temporal_transformer.layers)))
@@ -767,7 +197,7 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
                     qkv_lora = MoELoRAqkv(orig_qkv, **lora_kwargs)
                     layer[1].qkv = qkv_lora
 
-        lora_kwargs['rank'] = int(self.policy_cfg.adapter.rank / 2)  # 8
+        lora_kwargs['rank'] = int(self.policy_cfg.adapter.rank/2)   # 8
         lora_kwargs['tune_bias'] = False
         if self.policy_cfg.s_lora_image:
             if self.policy_cfg.s_lora_image_layer_list == "all":
@@ -810,16 +240,16 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         # 1. encode image
         img_encoded_list = {}
         for img_name in self.image_encoders.keys():
-            img = data["obs"][img_name]  # (B, T, C, H, W)
+            img = data["obs"][img_name] # (B, T, C, H, W)
             B, T = img.shape[:2]
             if layer_feature_list is not None:
                 img_encoded = TensorUtils.time_distributed(
-                    layer_feature_list[img_name],
-                    self.image_encoder_spatial.second_forward_lora,
-                    layer_index=self.s_lora_image_layer_list[0])
+                            layer_feature_list[img_name],
+                            self.image_encoder_spatial.second_forward_lora,
+                            layer_index=self.s_lora_image_layer_list[0])
             else:
                 img_encoded = TensorUtils.time_distributed(
-                    img, self.image_encoder_spatial.forward)
+                            img, self.image_encoder_spatial.forward)
             if self.embed_size == self.image_embed_dim:
                 pass
             else:
@@ -861,12 +291,12 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             img_encoded_list = {}
             layer_feature_list = {}
             for img_name in self.image_encoders.keys():
-                img = data["obs"][img_name]  # (B, T, C, H, W)
+                img = data["obs"][img_name] # (B, T, C, H, W)
                 B, T = img.shape[:2]
                 if self.policy_cfg.s_lora_image:
                     img_encoded, layer_feature = TensorUtils.time_distributed(
                         img, self.image_encoder_spatial.first_forward_frozen,
-                        layer_index=self.s_lora_image_layer_list[0] - 1)    # layer_index=5
+                        layer_index=self.s_lora_image_layer_list[0]-1)
                     layer_feature_list[img_name] = layer_feature
                 if self.embed_size == self.image_embed_dim:
                     pass
@@ -880,71 +310,23 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
 
         query_in = text_encoded
         for k, v in img_encoded_list.items():
-            if self.query_use_mean_img:     # true
+            if self.query_use_mean_img:
                 img_emb_mean = v.mean(dim=-2)
-                query_in = torch.cat([query_in, img_emb_mean], dim=-1)  # (bs, 768*3)
-            if self.query_use_diff_img:     # false
-                img_emb_diff = v[:, -1, :] - v[:, 0, :]
+                query_in = torch.cat([query_in, img_emb_mean], dim=-1)
+            if self.query_use_diff_img:
+                img_emb_diff = v[:,-1,:] - v[:,0,:]
                 query_in = torch.cat([query_in, img_emb_diff], dim=-1)
         if self.query_use_proprio:
             for modality_name in ["joint_states", "gripper_states"]:
                 query_proprio = data["obs"][modality_name].mean(dim=-2)
-                query_in = torch.cat([query_in, query_proprio], dim=-1) # (bs, 768*3+7+2)
+                query_in= torch.cat([query_in, query_proprio], dim=-1)
 
         return layer_feature_list, query_in
 
-    def init_router(self):
-        self.acil_router = ACIL(
-            backbone_output_size=2057,
-            buffer_size=8192,
-            out_features=self.pool_size * 6,
-            gamma=0.1,
-            device=self.cfg.device,
-            dtype=torch.double)
 
-        # self.acil_router = GKEAL(
-        #     backbone_output_size=2057,
-        #     buffer_size=8192,
-        #     out_features=60,
-        #     gamma=0.1,
-        #     device=self.cfg.device,
-        #     dtype=torch.double)
-        print(self.acil_router)
-
-    def infer_lora(self, query_in, mode):
-        # with amp.autocast('cuda', dtype=torch.float32):
-        if mode == 'train':
-            coeff, topk_attn_norm_moe, topk_idx = self.moe_router.forward(query_in)
-            topk_attn_norm = topk_attn_norm_moe
-        else:
-            bs = query_in.shape[0]
-            topk = min(self.moe_router.moe_topk, self.moe_router.pool_size)
-
-            coeff = self.acil_router.forward(query_in).to(torch.float32)  # (bs,60)
-            # print(coeff)
-
-            # TODO: for incremental size
-            coeff = coeff.reshape(bs, -1, 6)    # (bs, k, 6)
-            coeff = coeff.transpose(1, 2)    # (bs, 6, k)
-            mask = (coeff < 0) | (coeff < 0.01)
-            coeff = torch.where(mask, torch.tensor(0.0, dtype=coeff.dtype, device=coeff.device), coeff)
-            # print(coeff)
-
-            # coeff = coeff.reshape(bs, 6, -1)  # (bs, 6, 10)
-            # coeff = coeff[:, :, :self.moe_router.pool_size]  # (bs, 6, 2)
-            # print(coeff)
-
-            # topk_attn_norm_acil = topk_attn_norm_acil.reshape(bs, -1)   # (bs,12)
-            # coeff_multi = topk_attn_norm_acil.view(bs, 6, 2)
-            # print(coeff_multi)
-            topk_coeff_multi, topk_idx_multi = torch.topk(coeff, k=topk, dim=-1, sorted=False)
-            # print(topk_idx_multi)
-            topk_attn_norm_acil = topk_coeff_multi.view(bs, -1)
-            topk_idx = topk_idx_multi.view(bs, -1)
-            # print(topk_attn_norm_acil)
-            # print(topk_idx)
-            topk_attn_norm = topk_attn_norm_acil
-
+    def infer_lora(self, query_in, mode='train'):
+        with amp.autocast('cuda', dtype=torch.float32):
+            _, topk_attn_norm, topk_idx = self.moe_router.forward(query_in)
         if mode == 'save_attn':
             return topk_idx, topk_attn_norm
 
@@ -971,60 +353,27 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
                     self.fusion_module[i].set_attentions(topk_attn_norm_sep_list['fusion'], topk_idx_sep_list['fusion'])
                 else:
                     self.fusion_module[i].set_attentions(topk_attn_norm, topk_idx)
-
-        # TODO: diffusion lora
-        self.policy_head.noise_pred_net.encoder[0].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.encoder[2].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[0].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[0].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[1].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.decoder.layers[1].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.noise_pred_net.head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-
-        self.policy_head.ema_noise_pred_net.encoder[0].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.encoder[2].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        self.policy_head.ema_noise_pred_net.head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-
-        # if isinstance(self.policy_head, MoELoRA):
-        #     if self.router_coeff_seperate:
-        #         self.policy_head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        #     else:
-        #         self.policy_head.set_attentions(topk_attn_norm, topk_idx)
-
-        # for i, linear in enumerate(self.policy_head.share):
-        #     if isinstance(linear, MoELoRA):
-        #         if self.router_coeff_seperate:
-        #             self.policy_head.share[i].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        #         else:
-        #             self.policy_head.share[i].set_attentions(topk_attn_norm, topk_idx)
-        # if isinstance(linear, MoELoRA):
-        #     if self.router_coeff_seperate:
-        #         self.policy_head.mean_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        #     else:
-        #         self.policy_head.mean_layer.set_attentions(topk_attn_norm, topk_idx)
-        # if isinstance(linear, MoELoRA):
-        #     if self.router_coeff_seperate:
-        #         self.policy_head.logstd_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        #     else:
-        #         self.policy_head.logstd_layer.set_attentions(topk_attn_norm, topk_idx)
-        # if isinstance(linear, MoELoRA):
-        #     if self.router_coeff_seperate:
-        #         self.policy_head.logits_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
-        #     else:
-        #         self.policy_head.logits_layer.set_attentions(topk_attn_norm, topk_idx)
-
+        for i, linear in enumerate(self.policy_head.share):
+            if isinstance(linear, MoELoRA):
+                if self.router_coeff_seperate:
+                    self.policy_head.share[i].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+                else:
+                    self.policy_head.share[i].set_attentions(topk_attn_norm, topk_idx)
+        if isinstance(linear, MoELoRA):
+            if self.router_coeff_seperate:
+                self.policy_head.mean_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+            else:
+                self.policy_head.mean_layer.set_attentions(topk_attn_norm, topk_idx)
+        if isinstance(linear, MoELoRA):
+            if self.router_coeff_seperate:
+                self.policy_head.logstd_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+            else:
+                self.policy_head.logstd_layer.set_attentions(topk_attn_norm, topk_idx)
+        if isinstance(linear, MoELoRA):
+            if self.router_coeff_seperate:
+                self.policy_head.logits_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+            else:
+                self.policy_head.logits_layer.set_attentions(topk_attn_norm, topk_idx)
         if self.use_t_lora:
             for i, layer in enumerate(self.temporal_transformer.layers):
                 if isinstance(self.temporal_transformer.layers[i][1].qkv, MoELoRAqkv):
@@ -1073,34 +422,18 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
 
     def forward(self, data):
         layer_feature_list, query_in = self.context_encode(data)
-        topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='train')
+        topk_idx, topk_attn_norm = self.infer_lora(query_in)
         x = self.spatial_encode(data, layer_feature_list)  # (B, T, num_modality, E)
         x = self.temporal_encode(x)  # (B, T, E)
-        # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs,1,70) -> (bs,10,7)
-        output = self.policy_head(obs_seq=x, action_seq=data["actions"])  # (bs,1,70) -> (bs,10,7)
-        return output, query_in, topk_idx, topk_attn_norm
-        # dist = self.policy_head(x)
-        # return dist, query_in, topk_idx, topk_attn_norm
+        dist = self.policy_head(x)
+        return dist, query_in, topk_idx, topk_attn_norm
 
     def compute_loss(self, data, reduction="mean"):
         data = self.preprocess_input(data, train_mode=True)
-        # dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
-        # bc_loss = F.l1_loss(dist, data["actions"], reduction=reduction)
-        # bc_loss = self.policy_head.loss_fn(dist, data["actions"], reduction)
+        dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
+        bc_loss = self.policy_head.loss_fn(dist, data["actions"], reduction)
         # loss = bc_loss
-        output, query_in, topk_idx, topk_attn_norm = self.forward(data)
-        noise_pred = output['noise_pred']
-        noise = output['noise']
-        loss = F.mse_loss(noise_pred, noise, reduction=reduction)
-        return loss
-
-    @torch.no_grad()
-    def calc(self, data):
-        data = self.preprocess_input(data, train_mode=True)
-        layer_feature_list, query_in = self.context_encode(data)
-        coeff, _, _ = self.moe_router.forward(query_in)  # TODO: coeff before topk
-        # dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
-        return query_in, coeff
+        return bc_loss
 
     def get_action(self, data):
         self.eval()
@@ -1113,8 +446,7 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             if len(self.context_queue) > self.max_seq_len:
                 self.context_queue.pop(0)
             query_in = torch.stack(self.context_queue, dim=0).mean(dim=0)  # (B, T, H_all)
-            topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='eval')
-            # self.expert_count.append(topk_attn_norm)
+            topk_idx, topk_attn_norm = self.infer_lora(query_in)
             x = self.spatial_encode(data, layer_feature_list)
             # else:
             #     if self.query_use_proprio:
@@ -1128,61 +460,40 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             #     if len(self.context_queue) > self.max_seq_len:
             #         self.context_queue.pop(0)
             #     x = self.spatial_encode(data)
-            # self.latent_queue.append(x)
-            # if len(self.latent_queue) > self.max_seq_len:
-            #     self.latent_queue.pop(0)
-            # x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
+            self.latent_queue.append(x)
+            if len(self.latent_queue) > self.max_seq_len:
+                self.latent_queue.pop(0)
+            x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
             x = self.temporal_encode(x)
-            # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs, 10, 7)
-            # dist = self.policy_head(x[:, -1])
-            action = self.policy_head(obs_seq=x, action_seq=None)  # (bs, 10, 7)
-        # action = dist.sample().detach().cpu()
-        # self.infer_flag += 1
-        # return action.view(action.shape[0], -1).numpy()
+            dist = self.policy_head(x[:, -1])
+        action = dist.sample().detach().cpu()
+        self.infer_flag += 1
+        return action.view(action.shape[0], -1).numpy()
 
-        bs = action.shape[0]
-        actions = []
-        for i in range(bs):
-            self.all_time_actions[i, [self.step], self.step: self.step + self.num_queries] = action[[i]]
-            actions_for_curr_step = self.all_time_actions[i, :, self.step]
-            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-            actions_for_curr_step = actions_for_curr_step[actions_populated]
-            k = 0.01
-            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-            exp_weights = exp_weights / exp_weights.sum()
-            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-            action_chunk = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)  # (bs, 7)
-            actions.append(action_chunk)
-        actions = torch.cat(actions, dim=0)
-        self.step += 1
-        return actions.detach().cpu().numpy()  # (bs, 7)
-
-    # def recall_moe_attention(self, replayed_query_in, replayed_attn_vector):
-    #     bsz = replayed_query_in.shape[0]
-    #     now_topk_attn_norm, now_topk_idx = self.moe_router.forward(replayed_query_in)
-    #     if self.router_coeff_seperate:
-    #         topk_attn_norm_multi = now_topk_attn_norm.view(bsz, 6, -1)
-    #         topk_idx_multi = now_topk_idx.view(bsz, 6, -1)
-    #         now_attn_vector = torch.zeros((bsz, 6, self.pool_size), device=now_topk_attn_norm.device)
-    #         for i in range(6):
-    #             now_attn_vector[:, i, :].scatter_(1, topk_idx_multi[:, i, :], topk_attn_norm_multi[:, i, :])
-    #         now_attn_vector.view(bsz, -1)
-    #     else:
-    #         now_attn_vector = torch.zeros((bsz, self.pool_size), device=now_topk_attn_norm.device)
-    #         now_attn_vector.scatter_(1, now_topk_idx, now_topk_attn_norm)
-    #     replayed_attn_loss = torch.nn.functional.mse_loss(now_attn_vector, replayed_attn_vector)
-    #     return replayed_attn_loss, now_attn_vector
+    def recall_moe_attention(self, replayed_query_in, replayed_attn_vector):
+        bsz = replayed_query_in.shape[0]
+        now_topk_attn_norm, now_topk_idx = self.moe_router.forward(replayed_query_in)
+        if self.router_coeff_seperate:
+            topk_attn_norm_multi = now_topk_attn_norm.view(bsz, 6, -1)
+            topk_idx_multi = now_topk_idx.view(bsz, 6, -1)
+            now_attn_vector = torch.zeros((bsz, 6, self.pool_size), device=now_topk_attn_norm.device)
+            for i in range(6):
+                now_attn_vector[:, i, :].scatter_(1, topk_idx_multi[:, i, :], topk_attn_norm_multi[:, i, :])
+            now_attn_vector.view(bsz, -1)
+        else:
+            now_attn_vector = torch.zeros((bsz, self.pool_size), device=now_topk_attn_norm.device)
+            now_attn_vector.scatter_(1, now_topk_idx, now_topk_attn_norm)
+        replayed_attn_loss = torch.nn.functional.mse_loss(now_attn_vector, replayed_attn_vector)
+        return replayed_attn_loss, now_attn_vector
 
     def reset(self):
         self.context_queue = []
         self.latent_queue = []
         self.infer_flag = 0
-        self.step = 0
-        self.all_time_actions.zero_()
 
     def add_new_and_freeze_previous(self, add_expert_num):
-        self.pool_size += add_expert_num  # 1
-        self.moe_router.add_expert(add_expert_num)  # if new_task_mean, reinit in the algo
+        self.pool_size += add_expert_num    # 1
+        self.moe_router.add_expert(add_expert_num) # if new_task_mean, reinit in the algo
         for i, encoder in enumerate(self.extra_encoder.encoders):
             for j, linear in enumerate(encoder):
                 if isinstance(linear, MoELoRA):
@@ -1190,44 +501,15 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         for i, linear in enumerate(self.fusion_module):
             if isinstance(linear, MoELoRA):
                 self.fusion_module[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-
-        # TODO: diffusion lora
-        self.policy_head.noise_pred_net.encoder[0].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.encoder[2].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[0].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[0].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[1].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.decoder.layers[1].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.noise_pred_net.head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-
-        self.policy_head.ema_noise_pred_net.encoder[0].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.encoder[2].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        self.policy_head.ema_noise_pred_net.head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-
-        # if isinstance(self.policy_head, MoELoRA):
-        #     self.policy_head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-
-        # for i, linear in enumerate(self.policy_head.share):
-        #     if isinstance(linear, MoELoRA):
-        #         self.policy_head.share[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        # if isinstance(self.policy_head.mean_layer, MoELoRA):
-        #     self.policy_head.mean_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        # if isinstance(self.policy_head.logstd_layer, MoELoRA):
-        #     self.policy_head.logstd_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
-        # if isinstance(self.policy_head.logits_layer, MoELoRA):
-        #     self.policy_head.logits_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        for i, linear in enumerate(self.policy_head.share):
+            if isinstance(linear, MoELoRA):
+                self.policy_head.share[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        if isinstance(self.policy_head.mean_layer, MoELoRA):
+            self.policy_head.mean_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        if isinstance(self.policy_head.logstd_layer, MoELoRA):
+            self.policy_head.logstd_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+        if isinstance(self.policy_head.logits_layer, MoELoRA):
+            self.policy_head.logits_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
 
         if self.use_t_lora:
             for i, layer in enumerate(self.temporal_transformer.layers):
@@ -1250,3 +532,723 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         # print("Total parameters: {}".format(total_params))
         # trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         # print("Trainable parameters: {}".format(trainable_params))
+
+# class BCFoundationADRPolicy(BCFoundationTailPolicy):
+#     """
+#     Input: (o_{t-H}, ... , o_t)
+#     Output: a_t or distribution of a_t
+#     """
+#
+#     def __init__(self, cfg, shape_meta):
+#         super().__init__(cfg, shape_meta)
+#         policy_cfg = cfg.policy
+#         self.policy_cfg = policy_cfg
+#         img_encoder_kwargs = policy_cfg.image_encoder.network_kwargs
+#         img_encoder_kwargs.lora_cfg = policy_cfg.image_encoder.adapter
+#         text_encoder_kwargs = policy_cfg.language_encoder.network_kwargs
+#         text_encoder_kwargs.lora_cfg = policy_cfg.language_encoder.adapter
+#         self.embed_size = policy_cfg.embed_size
+#         self.has_pretrained = policy_cfg.has_pretrained
+#
+#         ### 1. encode image
+#         self.image_encoders = {}
+#
+#         for name in shape_meta["all_shapes"].keys():
+#             if "rgb" in name or "depth" in name:
+#                 self.image_encoders[name] = {
+#                     "input_shape": shape_meta["all_shapes"][name],
+#                 }
+#         self.num_of_image = len(self.image_encoders.keys())
+#
+#         self.image_encoder_spatial = eval(policy_cfg.image_encoder.network)(**img_encoder_kwargs)
+#         self.image_embed_dim = self.image_encoder_spatial.model.embed_dim
+#
+#         ### 2. encode language
+#         self.language_encoder_spatial = eval(policy_cfg.language_encoder.network)(**text_encoder_kwargs)
+#         self.language_embed_dim = self.language_encoder_spatial.model.config.hidden_size
+#         self.frozen_language_emb = None
+#
+#         ### 5. encode extra information (e.g. gripper, joint_state)
+#         self.extra_encoder = ExtraModalityTokens(
+#             use_joint=cfg.data.use_joint,
+#             use_gripper=cfg.data.use_gripper,
+#             use_ee=cfg.data.use_ee,
+#             extra_num_layers=policy_cfg.extra_num_layers,
+#             extra_hidden_size=policy_cfg.extra_hidden_size,
+#             extra_embedding_size=self.embed_size,
+#         )
+#         self.joint_states_dim = 7
+#         self.gripper_states_dim = 2
+#         self.ee_dim = 3
+#
+#         ### 6. FiLM
+#         if self.embed_size == self.image_embed_dim:
+#             pass
+#         else:
+#             self.img_down_mlp = nn.Linear(self.image_embed_dim, self.embed_size)
+#
+#         self.num_of_extra = self.extra_encoder.num_extra
+#
+#         self.num_of_modality = self.num_of_image + self.num_of_extra
+#         self.fusion_module = nn.Sequential(nn.Linear(self.language_embed_dim, policy_cfg.film_hidden_size),
+#                                            nn.GELU('tanh'),
+#                                            nn.Linear(policy_cfg.film_hidden_size, self.embed_size * 2),
+#                                            )
+#
+#         ### 7. define temporal transformer
+#         policy_cfg.temporal_position_encoding.network_kwargs.input_size = self.embed_size
+#         self.temporal_transformer_position_encoding_fn = eval(
+#             policy_cfg.temporal_position_encoding.network
+#         )(**policy_cfg.temporal_position_encoding.network_kwargs)
+#
+#         self.temporal_transformer = TransformerDecoder(
+#             input_size=self.embed_size,
+#             num_layers=policy_cfg.transformer_num_layers,
+#             num_heads=policy_cfg.transformer_num_heads,
+#             head_output_size=policy_cfg.transformer_head_output_size,
+#             mlp_hidden_size=policy_cfg.transformer_mlp_hidden_size,
+#             dropout=policy_cfg.transformer_dropout,
+#             use_lora=policy_cfg.use_lora,
+#             fullft=policy_cfg.fullft,
+#             lora_cfg=policy_cfg.adapter,
+#         )
+#
+#         # policy_head_kwargs = policy_cfg.policy_head.network_kwargs
+#         # policy_head_kwargs.input_size = self.embed_size
+#         # policy_head_kwargs.output_size = shape_meta["ac_dim"]
+#         #
+#         # self.policy_head = eval(policy_cfg.policy_head.network)(
+#         #     **policy_cfg.policy_head.loss_kwargs,
+#         #     **policy_cfg.policy_head.network_kwargs
+#         # )
+#
+#         self.num_queries = cfg.data.seq_len
+#         self.step = 0
+#
+#         # self.policy_head = nn.Linear(self.embed_size, shape_meta["ac_dim"] * self.num_queries)
+#         self.policy_head = DiffusionPolicy(obs_dim=self.embed_size,
+#                                            act_dim=shape_meta["ac_dim"],
+#                                            obs_horizon=10,
+#                                            pred_horizon=cfg.data.seq_len,
+#                                            hidden_dim=self.embed_size,
+#                                            num_layers=2,
+#                                            policy_type="transformer",
+#                                            device=cfg.device)
+#
+#         self.all_time_actions = torch.zeros((20, 600, 600 + self.num_queries, shape_meta["ac_dim"])).to(cfg.device)
+#
+#         self.latent_queue = []
+#         self.max_seq_len = policy_cfg.transformer_max_seq_len
+#
+#         ### 8. reshape transform for attention visualization
+#         self.reshape_transform = lambda x: reshape_transform(
+#             x, self.image_encoder_spatial[0].h, self.image_encoder_spatial[1].w
+#         )
+#
+#         self.expert_count = []
+#
+#     def init_moe_policy(self):
+#         for k, v in self.named_parameters():
+#             v.requires_grad = False
+#         self.task_emb_size = self.policy_cfg.task_emb_size  # 64
+#         self.pool_size = self.policy_cfg.init_pool_size  # 0
+#         self.ll_expert_per_task = self.policy_cfg.ll_expert_per_task  # 1
+#         self.query_use_proprio = self.policy_cfg.query_use_proprio  # true
+#         self.router_coeff_seperate = self.policy_cfg.router_coeff_seperate  # true
+#         self.infer_interval = self.policy_cfg.infer_interval  # 1
+#         self.query_use_mean_img = self.policy_cfg.query_use_mean_img  # true
+#         self.query_use_diff_img = self.policy_cfg.query_use_diff_img  # false
+#         router_in_dim = self.language_embed_dim
+#         if self.query_use_mean_img:
+#             router_in_dim += self.image_embed_dim * 2
+#         if self.query_use_diff_img:
+#             router_in_dim += self.image_embed_dim * 2
+#         if self.query_use_proprio:
+#             router_in_dim += self.joint_states_dim + self.gripper_states_dim
+#         self.moe_router = MoERouterCoeff(in_dim=router_in_dim,
+#                                          hidden_dim=self.policy_cfg.task_emb_net_hidden_size,  # 256
+#                                          cfg=self.policy_cfg)
+#         self.moe_topk = self.policy_cfg.moe_topk  # 3
+#
+#         lora_kwargs = {'rank': self.policy_cfg.adapter.rank,  # 16
+#                        'init_pool_size': self.pool_size,
+#                        'merge_AB': self.policy_cfg.merge_AB,  # 'weight'
+#                        'tune_bias': self.policy_cfg.tune_bias,  # false
+#                        'lora_dropout': self.policy_cfg.lora_dropout,  # 0.15
+#                        }
+#         for i, encoder in enumerate(self.extra_encoder.encoders):
+#             for j, orig_linear in enumerate(encoder):
+#                 if isinstance(orig_linear, nn.Linear):
+#                     moe_linear = MoELoRA(orig_linear, **lora_kwargs)
+#                     self.extra_encoder.encoders[i][j] = moe_linear
+#         for i, orig_linear in enumerate(self.fusion_module):
+#             if isinstance(orig_linear, nn.Linear):
+#                 moe_linear = MoELoRA(orig_linear, **lora_kwargs)
+#                 self.fusion_module[i] = moe_linear
+#
+#         # TODO: diffusion lora
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.encoder[0], **lora_kwargs)
+#         self.policy_head.noise_pred_net.encoder[0] = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.encoder[2], **lora_kwargs)
+#         self.policy_head.noise_pred_net.encoder[2] = moe_linear
+#
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
+#
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear1, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[0].linear1 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear2, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[0].linear2 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear1, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[1].linear1 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear2, **lora_kwargs)
+#         self.policy_head.noise_pred_net.decoder.layers[1].linear2 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.noise_pred_net.head, **lora_kwargs)
+#         self.policy_head.noise_pred_net.head = moe_linear
+#
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.encoder[0], **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.encoder[0] = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.encoder[2], **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.encoder[2] = moe_linear
+#
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
+#
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2 = moe_linear
+#         moe_linear = MoELoRA(self.policy_head.ema_noise_pred_net.head, **lora_kwargs)
+#         self.policy_head.ema_noise_pred_net.head = moe_linear
+#
+#         # if isinstance(self.policy_head, nn.Linear):
+#         #     moe_linear = MoELoRA(self.policy_head, **lora_kwargs)
+#         #     self.policy_head = moe_linear
+#
+#         # for i, orig_linear in enumerate(self.policy_head.share):
+#         #     if isinstance(orig_linear, nn.Linear):
+#         #         moe_linear = MoELoRA(orig_linear, **lora_kwargs)
+#         #         self.policy_head.share[i] = moe_linear
+#         # moe_linear = MoELoRA(self.policy_head.mean_layer, **lora_kwargs)
+#         # self.policy_head.mean_layer = moe_linear
+#         # moe_linear = MoELoRA(self.policy_head.logstd_layer, **lora_kwargs)
+#         # self.policy_head.logstd_layer = moe_linear
+#         # moe_linear = MoELoRA(self.policy_head.logits_layer, **lora_kwargs)
+#         # self.policy_head.logits_layer = moe_linear
+#
+#         self.use_t_lora = self.policy_cfg.t_lora  # true t is transformer
+#         self.use_s_lora_image = self.policy_cfg.s_lora_image  # true
+#         self.use_s_lora_text = self.policy_cfg.s_lora_text  # true
+#         if self.policy_cfg.t_lora:
+#             if self.policy_cfg.t_lora_layer_list == "all":
+#                 self.t_lora_layer_list = list(range(len(self.temporal_transformer.layers)))
+#             else:
+#                 self.t_lora_layer_list = self.policy_cfg.t_lora_layer_list
+#             assert isinstance(self.t_lora_layer_list, list)
+#             for i, layer in enumerate(self.temporal_transformer.layers):
+#                 if i in self.t_lora_layer_list:
+#                     orig_qkv = layer[1].qkv
+#                     qkv_lora = MoELoRAqkv(orig_qkv, **lora_kwargs)
+#                     layer[1].qkv = qkv_lora
+#
+#         lora_kwargs['rank'] = int(self.policy_cfg.adapter.rank / 2)  # 8
+#         lora_kwargs['tune_bias'] = False
+#         if self.policy_cfg.s_lora_image:
+#             if self.policy_cfg.s_lora_image_layer_list == "all":
+#                 self.s_lora_image_layer_list = list(range(len(self.image_encoder_spatial.model.blocks)))
+#             else:
+#                 self.s_lora_image_layer_list = self.policy_cfg.s_lora_image_layer_list  # [6,7,8,9,10,11]
+#             assert isinstance(self.s_lora_image_layer_list, list)
+#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
+#                 if i in self.s_lora_image_layer_list:
+#                     orig_qkv = layer.attn.qkv
+#                     qkv_lora = MoELoRAqkv(orig_qkv, **lora_kwargs)
+#                     self.image_encoder_spatial.model.blocks[i].attn.qkv = qkv_lora
+#
+#         if self.policy_cfg.s_lora_text:
+#             if self.policy_cfg.s_lora_text_layer_list == "all":
+#                 self.s_lora_text_layer_list = list(range(len(self.language_encoder_spatial.model.encoder.layers)))
+#             else:
+#                 self.s_lora_text_layer_list = self.policy_cfg.s_lora_text_layer_list  # [6,7,8,9,10,11]
+#             assert isinstance(self.s_lora_text_layer_list, list)
+#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
+#                 if i in self.s_lora_text_layer_list:
+#                     orig_q = layer.self_attn.q_proj
+#                     orig_v = layer.self_attn.v_proj
+#                     q_lora = MoELoRA(orig_q, **lora_kwargs)
+#                     v_lora = MoELoRA(orig_v, **lora_kwargs)
+#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.q_proj = q_lora
+#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.v_proj = v_lora
+#
+#     def spatial_encode(self, data, layer_feature_list=None):
+#         if self.use_s_lora_image:
+#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
+#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
+#                     self.image_encoder_spatial.model.blocks[i].attn.qkv.set_use_lora(True)
+#         if self.use_s_lora_text:
+#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
+#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
+#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.q_proj.set_use_lora(True)
+#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
+#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.v_proj.set_use_lora(True)
+#         # 1. encode image
+#         img_encoded_list = {}
+#         for img_name in self.image_encoders.keys():
+#             img = data["obs"][img_name]  # (B, T, C, H, W)
+#             B, T = img.shape[:2]
+#             if layer_feature_list is not None:
+#                 img_encoded = TensorUtils.time_distributed(
+#                     layer_feature_list[img_name],
+#                     self.image_encoder_spatial.second_forward_lora,
+#                     layer_index=self.s_lora_image_layer_list[0])
+#             else:
+#                 img_encoded = TensorUtils.time_distributed(
+#                     img, self.image_encoder_spatial.forward)
+#             if self.embed_size == self.image_embed_dim:
+#                 pass
+#             else:
+#                 img_encoded = self.img_down_mlp(img_encoded)
+#             img_encoded_list[img_name] = img_encoded
+#         # 2. encode task_emb
+#         text_tokenzied = data["task_emb"]
+#         text_encoded = self.language_encoder_spatial(text_tokenzied)  # (B, E_clip)
+#
+#         # 3. encode extra
+#         extra = self.extra_encoder(data["obs"])  # (B, T, num_extra, E)
+#         output = extra
+#
+#         for img_name in self.image_encoders.keys():
+#             output = torch.cat([output, img_encoded_list[img_name].unsqueeze(dim=-2)], dim=-2)  # (B, T, num_modality, E)
+#
+#         # 4. film
+#         beta, gamma = torch.split(self.fusion_module(text_encoded).reshape(B, self.embed_size * 2), [self.embed_size, self.embed_size], -1)
+#         beta_all = beta.view(B, 1, 1, self.embed_size).expand(-1, T, self.num_of_modality, -1)
+#         gamma_all = gamma.view(B, 1, 1, self.embed_size).expand(-1, T, self.num_of_modality, -1)
+#
+#         output = (1 + gamma_all) * output + beta_all
+#
+#         return output # (B, T, num_modality, E)
+#
+#     def context_encode(self, data):
+#         if self.use_s_lora_image:
+#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
+#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
+#                     self.image_encoder_spatial.model.blocks[i].attn.qkv.set_use_lora(False)
+#         if self.use_s_lora_text:
+#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
+#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
+#                     layer.self_attn.q_proj.set_use_lora(False)
+#                 if isinstance(layer.self_attn.v_proj, MoELoRA):
+#                     layer.self_attn.v_proj.set_use_lora(False)
+#         # 1. encode image
+#         with torch.no_grad():
+#             img_encoded_list = {}
+#             layer_feature_list = {}
+#             for img_name in self.image_encoders.keys():
+#                 img = data["obs"][img_name]  # (B, T, C, H, W)
+#                 B, T = img.shape[:2]
+#                 if self.policy_cfg.s_lora_image:
+#                     img_encoded, layer_feature = TensorUtils.time_distributed(
+#                         img, self.image_encoder_spatial.first_forward_frozen,
+#                         layer_index=self.s_lora_image_layer_list[0] - 1)    # layer_index=5
+#                     layer_feature_list[img_name] = layer_feature
+#                 if self.embed_size == self.image_embed_dim:
+#                     pass
+#                 else:
+#                     img_encoded = self.img_down_mlp(img_encoded)
+#                 img_encoded_list[img_name] = img_encoded
+#
+#             # 2. encode task_emb
+#             text_tokenzied = data["task_emb"]
+#             text_encoded = self.language_encoder_spatial(text_tokenzied)
+#
+#         query_in = text_encoded
+#         for k, v in img_encoded_list.items():
+#             if self.query_use_mean_img:     # true
+#                 img_emb_mean = v.mean(dim=-2)
+#                 query_in = torch.cat([query_in, img_emb_mean], dim=-1)  # (bs, 768*3)
+#             if self.query_use_diff_img:     # false
+#                 img_emb_diff = v[:, -1, :] - v[:, 0, :]
+#                 query_in = torch.cat([query_in, img_emb_diff], dim=-1)
+#         if self.query_use_proprio:
+#             for modality_name in ["joint_states", "gripper_states"]:
+#                 query_proprio = data["obs"][modality_name].mean(dim=-2)
+#                 query_in = torch.cat([query_in, query_proprio], dim=-1) # (bs, 768*3+7+2)
+#
+#         return layer_feature_list, query_in
+#
+#     def init_router(self):
+#         self.acil_router = ACIL(
+#             backbone_output_size=2057,
+#             # buffer_size=1024,
+#             # buffer_size=4096,
+#             buffer_size=8192,
+#             out_features=self.pool_size * 6,
+#             gamma=0.1,
+#             device=self.cfg.device,
+#             dtype=torch.double)
+#
+#         # self.acil_router = GKEAL(
+#         #     backbone_output_size=2057,
+#         #     buffer_size=8192,
+#         #     out_features=60,
+#         #     gamma=0.1,
+#         #     device=self.cfg.device,
+#         #     dtype=torch.double)
+#         print(self.acil_router)
+#
+#     def infer_lora(self, query_in, mode):
+#         # with amp.autocast('cuda', dtype=torch.float32):
+#         if mode == 'train':
+#             coeff, topk_attn_norm_moe, topk_idx = self.moe_router.forward(query_in)
+#             topk_attn_norm = topk_attn_norm_moe
+#         else:
+#             bs = query_in.shape[0]
+#             topk = min(self.moe_router.moe_topk, self.moe_router.pool_size)
+#
+#             coeff = self.acil_router.forward(query_in).to(torch.float32)  # (bs,60)
+#             # print(coeff)
+#
+#             # TODO: for incremental size
+#             coeff = coeff.reshape(bs, -1, 6)    # (bs, k, 6)
+#             coeff = coeff.transpose(1, 2)    # (bs, 6, k)
+#             mask = (coeff < 0) | (coeff < 0.01)
+#             coeff = torch.where(mask, torch.tensor(0.0, dtype=coeff.dtype, device=coeff.device), coeff)
+#             # print(coeff)
+#
+#             # coeff = coeff.reshape(bs, 6, -1)  # (bs, 6, 10)
+#             # coeff = coeff[:, :, :self.moe_router.pool_size]  # (bs, 6, 2)
+#             # print(coeff)
+#
+#             # topk_attn_norm_acil = topk_attn_norm_acil.reshape(bs, -1)   # (bs,12)
+#             # coeff_multi = topk_attn_norm_acil.view(bs, 6, 2)
+#             # print(coeff_multi)
+#             topk_coeff_multi, topk_idx_multi = torch.topk(coeff, k=topk, dim=-1, sorted=False)
+#             # print(topk_idx_multi)
+#             topk_attn_norm_acil = topk_coeff_multi.view(bs, -1)
+#             topk_idx = topk_idx_multi.view(bs, -1)
+#             # print(topk_attn_norm_acil)
+#             # print(topk_idx)
+#             topk_attn_norm = topk_attn_norm_acil
+#
+#         if mode == 'save_attn':
+#             return topk_idx, topk_attn_norm
+#
+#         if self.router_coeff_seperate:
+#             bsz = topk_attn_norm.shape[0]
+#             topk_attn_norm_multi = topk_attn_norm.view(bsz, 6, -1)
+#             topk_idx_multi = topk_idx.view(bsz, 6, -1)
+#             topk_attn_norm_sep_list = {}
+#             topk_idx_sep_list = {}
+#             for i, key in zip(range(6), ['img', 'txt', 'extra', 'fusion', 'tem', 'head']):
+#                 topk_attn_norm_sep_list[key] = topk_attn_norm_multi[:, i, :]
+#                 topk_idx_sep_list[key] = topk_idx_multi[:, i, :]
+#
+#         for i, encoder in enumerate(self.extra_encoder.encoders):
+#             for j, linear in enumerate(encoder):
+#                 if isinstance(linear, MoELoRA):
+#                     if self.router_coeff_seperate:
+#                         self.extra_encoder.encoders[i][j].set_attentions(topk_attn_norm_sep_list['extra'], topk_idx_sep_list['extra'])
+#                     else:
+#                         self.extra_encoder.encoders[i][j].set_attentions(topk_attn_norm, topk_idx)
+#         for i, linear in enumerate(self.fusion_module):
+#             if isinstance(linear, MoELoRA):
+#                 if self.router_coeff_seperate:
+#                     self.fusion_module[i].set_attentions(topk_attn_norm_sep_list['fusion'], topk_idx_sep_list['fusion'])
+#                 else:
+#                     self.fusion_module[i].set_attentions(topk_attn_norm, topk_idx)
+#
+#         # TODO: diffusion lora
+#         self.policy_head.noise_pred_net.encoder[0].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.encoder[2].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[0].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[0].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[1].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.decoder.layers[1].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.noise_pred_net.head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#
+#         self.policy_head.ema_noise_pred_net.encoder[0].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.encoder[2].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         self.policy_head.ema_noise_pred_net.head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#
+#         # if isinstance(self.policy_head, MoELoRA):
+#         #     if self.router_coeff_seperate:
+#         #         self.policy_head.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         #     else:
+#         #         self.policy_head.set_attentions(topk_attn_norm, topk_idx)
+#
+#         # for i, linear in enumerate(self.policy_head.share):
+#         #     if isinstance(linear, MoELoRA):
+#         #         if self.router_coeff_seperate:
+#         #             self.policy_head.share[i].set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         #         else:
+#         #             self.policy_head.share[i].set_attentions(topk_attn_norm, topk_idx)
+#         # if isinstance(linear, MoELoRA):
+#         #     if self.router_coeff_seperate:
+#         #         self.policy_head.mean_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         #     else:
+#         #         self.policy_head.mean_layer.set_attentions(topk_attn_norm, topk_idx)
+#         # if isinstance(linear, MoELoRA):
+#         #     if self.router_coeff_seperate:
+#         #         self.policy_head.logstd_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         #     else:
+#         #         self.policy_head.logstd_layer.set_attentions(topk_attn_norm, topk_idx)
+#         # if isinstance(linear, MoELoRA):
+#         #     if self.router_coeff_seperate:
+#         #         self.policy_head.logits_layer.set_attentions(topk_attn_norm_sep_list['head'], topk_idx_sep_list['head'])
+#         #     else:
+#         #         self.policy_head.logits_layer.set_attentions(topk_attn_norm, topk_idx)
+#
+#         if self.use_t_lora:
+#             for i, layer in enumerate(self.temporal_transformer.layers):
+#                 if isinstance(self.temporal_transformer.layers[i][1].qkv, MoELoRAqkv):
+#                     if self.router_coeff_seperate:
+#                         self.temporal_transformer.layers[i][1].qkv.set_attentions(topk_attn_norm_sep_list['tem'], topk_idx_sep_list['tem'])
+#                     else:
+#                         self.temporal_transformer.layers[i][1].qkv.set_attentions(topk_attn_norm, topk_idx)
+#                     layer[1].qkv.set_use_lora(True)
+#
+#         if self.use_s_lora_image:
+#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
+#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
+#                     if self.router_coeff_seperate:
+#                         layer.attn.qkv.set_attentions(topk_attn_norm_sep_list['img'], topk_idx_sep_list['img'])
+#                     else:
+#                         layer.attn.qkv.set_attentions(topk_attn_norm, topk_idx)
+#                     layer.attn.qkv.set_use_lora(True)
+#
+#         if self.use_s_lora_text:
+#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
+#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
+#                     if self.router_coeff_seperate:
+#                         layer.self_attn.q_proj.set_attentions(topk_attn_norm_sep_list['txt'], topk_idx_sep_list['txt'])
+#                     else:
+#                         layer.self_attn.q_proj.set_attentions(topk_attn_norm, topk_idx)
+#                     layer.self_attn.q_proj.set_use_lora(True)
+#                 if isinstance(layer.self_attn.v_proj, MoELoRA):
+#                     if self.router_coeff_seperate:
+#                         layer.self_attn.v_proj.set_attentions(topk_attn_norm_sep_list['txt'], topk_idx_sep_list['txt'])
+#                     else:
+#                         layer.self_attn.v_proj.set_attentions(topk_attn_norm, topk_idx)
+#                     layer.self_attn.v_proj.set_use_lora(True)
+#
+#         return topk_idx, topk_attn_norm
+#
+#     def temporal_encode(self, x):
+#         pos_emb = self.temporal_transformer_position_encoding_fn(x)
+#         x = x + pos_emb.unsqueeze(1)  # (B, T, num_modality, E)
+#         sh = x.shape
+#         self.temporal_transformer.compute_mask(x.shape)
+#
+#         x = TensorUtils.join_dimensions(x, 1, 2)  # (B, T*num_modality, E)
+#         x = self.temporal_transformer(x)
+#         x = x.reshape(*sh)
+#         return x[:, :, 0]  # (B, T, E)
+#
+#     def forward(self, data):
+#         layer_feature_list, query_in = self.context_encode(data)
+#         topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='train')
+#         x = self.spatial_encode(data, layer_feature_list)  # (B, T, num_modality, E)
+#         x = self.temporal_encode(x)  # (B, T, E)
+#         # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs,1,70) -> (bs,10,7)
+#         output = self.policy_head(obs_seq=x, action_seq=data["actions"])  # (bs,1,70) -> (bs,10,7)
+#         return output, query_in, topk_idx, topk_attn_norm
+#         # dist = self.policy_head(x)
+#         # return dist, query_in, topk_idx, topk_attn_norm
+#
+#     def compute_loss(self, data, reduction="mean"):
+#         data = self.preprocess_input(data, train_mode=True)
+#         # dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
+#         # bc_loss = F.l1_loss(dist, data["actions"], reduction=reduction)
+#         # bc_loss = self.policy_head.loss_fn(dist, data["actions"], reduction)
+#         # loss = bc_loss
+#         output, query_in, topk_idx, topk_attn_norm = self.forward(data)
+#         noise_pred = output['noise_pred']
+#         noise = output['noise']
+#         loss = F.mse_loss(noise_pred, noise, reduction=reduction)
+#         return loss
+#
+#     @torch.no_grad()
+#     def calc(self, data):
+#         data = self.preprocess_input(data, train_mode=True)
+#         layer_feature_list, query_in = self.context_encode(data)
+#         coeff, _, _ = self.moe_router.forward(query_in)  # TODO: coeff before topk
+#         # dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
+#         return query_in, coeff
+#
+#     def get_action(self, data):
+#         self.eval()
+#         with torch.no_grad():
+#             # with amp.autocast('cuda', dtype=torch.float16):
+#             data = self.preprocess_input(data, train_mode=False)
+#             # if self.infer_flag % self.infer_interval == 0:
+#             layer_feature_list, query_in = self.context_encode(data)
+#             self.context_queue.append(query_in)
+#             if len(self.context_queue) > self.max_seq_len:
+#                 self.context_queue.pop(0)
+#             query_in = torch.stack(self.context_queue, dim=0).mean(dim=0)  # (B, T, H_all)
+#             topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='eval')
+#             # self.expert_count.append(topk_attn_norm)
+#             x = self.spatial_encode(data, layer_feature_list)
+#             # else:
+#             #     if self.query_use_proprio:
+#             #         query_in = self.context_queue[-1][...,:-(self.joint_states_dim+self.gripper_states_dim)]
+#             #         for modality_name in ["joint_states", "gripper_states"]:
+#             #             query_proprio = data["obs"][modality_name].mean(dim=-2)
+#             #             query_in= torch.cat([query_in, query_proprio], dim=-1)
+#             #     else:
+#             #         query_in = self.context_queue[-1]
+#             #     self.context_queue.append(query_in)
+#             #     if len(self.context_queue) > self.max_seq_len:
+#             #         self.context_queue.pop(0)
+#             #     x = self.spatial_encode(data)
+#             # self.latent_queue.append(x)
+#             # if len(self.latent_queue) > self.max_seq_len:
+#             #     self.latent_queue.pop(0)
+#             # x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
+#             x = self.temporal_encode(x)
+#             # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs, 10, 7)
+#             # dist = self.policy_head(x[:, -1])
+#             action = self.policy_head(obs_seq=x, action_seq=None)  # (bs, 10, 7)
+#         # action = dist.sample().detach().cpu()
+#         # self.infer_flag += 1
+#         # return action.view(action.shape[0], -1).numpy()
+#
+#         bs = action.shape[0]
+#         actions = []
+#         for i in range(bs):
+#             self.all_time_actions[i, [self.step], self.step: self.step + self.num_queries] = action[[i]]
+#             actions_for_curr_step = self.all_time_actions[i, :, self.step]
+#             actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+#             actions_for_curr_step = actions_for_curr_step[actions_populated]
+#             k = 0.01
+#             exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+#             exp_weights = exp_weights / exp_weights.sum()
+#             exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+#             action_chunk = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)  # (bs, 7)
+#             actions.append(action_chunk)
+#         actions = torch.cat(actions, dim=0)
+#         self.step += 1
+#         return actions.detach().cpu().numpy()  # (bs, 7)
+#
+#     # def recall_moe_attention(self, replayed_query_in, replayed_attn_vector):
+#     #     bsz = replayed_query_in.shape[0]
+#     #     now_topk_attn_norm, now_topk_idx = self.moe_router.forward(replayed_query_in)
+#     #     if self.router_coeff_seperate:
+#     #         topk_attn_norm_multi = now_topk_attn_norm.view(bsz, 6, -1)
+#     #         topk_idx_multi = now_topk_idx.view(bsz, 6, -1)
+#     #         now_attn_vector = torch.zeros((bsz, 6, self.pool_size), device=now_topk_attn_norm.device)
+#     #         for i in range(6):
+#     #             now_attn_vector[:, i, :].scatter_(1, topk_idx_multi[:, i, :], topk_attn_norm_multi[:, i, :])
+#     #         now_attn_vector.view(bsz, -1)
+#     #     else:
+#     #         now_attn_vector = torch.zeros((bsz, self.pool_size), device=now_topk_attn_norm.device)
+#     #         now_attn_vector.scatter_(1, now_topk_idx, now_topk_attn_norm)
+#     #     replayed_attn_loss = torch.nn.functional.mse_loss(now_attn_vector, replayed_attn_vector)
+#     #     return replayed_attn_loss, now_attn_vector
+#
+#     def reset(self):
+#         self.context_queue = []
+#         self.latent_queue = []
+#         self.infer_flag = 0
+#         self.step = 0
+#         self.all_time_actions.zero_()
+#
+#     def add_new_and_freeze_previous(self, add_expert_num):
+#         self.pool_size += add_expert_num  # 1
+#         self.moe_router.add_expert(add_expert_num)  # if new_task_mean, reinit in the algo
+#         for i, encoder in enumerate(self.extra_encoder.encoders):
+#             for j, linear in enumerate(encoder):
+#                 if isinstance(linear, MoELoRA):
+#                     self.extra_encoder.encoders[i][j].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         for i, linear in enumerate(self.fusion_module):
+#             if isinstance(linear, MoELoRA):
+#                 self.fusion_module[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#
+#         # TODO: diffusion lora
+#         self.policy_head.noise_pred_net.encoder[0].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.encoder[2].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[0].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[0].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[1].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.decoder.layers[1].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.noise_pred_net.head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#
+#         self.policy_head.ema_noise_pred_net.encoder[0].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.encoder[2].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         self.policy_head.ema_noise_pred_net.head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#
+#         # if isinstance(self.policy_head, MoELoRA):
+#         #     self.policy_head.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#
+#         # for i, linear in enumerate(self.policy_head.share):
+#         #     if isinstance(linear, MoELoRA):
+#         #         self.policy_head.share[i].add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         # if isinstance(self.policy_head.mean_layer, MoELoRA):
+#         #     self.policy_head.mean_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         # if isinstance(self.policy_head.logstd_layer, MoELoRA):
+#         #     self.policy_head.logstd_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         # if isinstance(self.policy_head.logits_layer, MoELoRA):
+#         #     self.policy_head.logits_layer.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#
+#         if self.use_t_lora:
+#             for i, layer in enumerate(self.temporal_transformer.layers):
+#                 if isinstance(self.temporal_transformer.layers[i][1].qkv, MoELoRAqkv):
+#                     self.temporal_transformer.layers[i][1].qkv.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         if self.use_s_lora_image:
+#             for i, layer in enumerate(self.image_encoder_spatial.model.blocks):
+#                 if isinstance(layer.attn.qkv, MoELoRAqkv):
+#                     self.image_encoder_spatial.model.blocks[i].attn.qkv.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         if self.use_s_lora_text:
+#             for i, layer in enumerate(self.language_encoder_spatial.model.encoder.layers):
+#                 if isinstance(layer.self_attn.q_proj, MoELoRA):
+#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.q_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#                 if isinstance(layer.self_attn.v_proj, MoELoRA):
+#                     self.language_encoder_spatial.model.encoder.layers[i].self_attn.v_proj.add_expert(add_expert_num, self.cfg.policy.ll_expert_init)
+#         # for name, tensor in self.named_parameters():
+#         #     if tensor.requires_grad:
+#         #         print('{}: {}, {}'.format(name, torch.numel(tensor), tensor.requires_grad))
+#         # total_params = sum(p.numel() for p in self.parameters())
+#         # print("Total parameters: {}".format(total_params))
+#         # trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+#         # print("Trainable parameters: {}".format(trainable_params))
