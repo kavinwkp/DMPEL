@@ -510,15 +510,14 @@ def main(hydra_cfg):
     #         raise NotImplementedError
     # else:
     # for i in range(n_tasks):
-    # for i in range(0):
-    i = int(cfg.exp[-1])
+    for i in range(1, 2):
 
-    print(f"[info] start training on task {i}", flush=True)
+        print(f"[info] start training on task {i}", flush=True)
 
-    algo.train()
-    t0 = time.time()
+        algo.train()
+        t0 = time.time()
 
-    algo.learn_one_task(datasets[i], i, benchmark, result_summary)
+        algo.learn_one_task(datasets[i], i, benchmark, result_summary)
 
         # if not cfg.use_ddp or int(os.environ["RANK"]) == 0:
         #     result_summary["S_fwd"][i] = s_fwd
