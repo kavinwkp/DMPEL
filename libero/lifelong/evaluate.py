@@ -201,7 +201,7 @@ def main(args):
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     descriptions = [benchmark.get_task(i).language for i in range(benchmark.n_tasks)]
 
-    task_embs = get_task_embs(cfg, descriptions)
+    # task_embs = get_task_embs(cfg, descriptions)
     task_embs_dir = os.path.join('/home/kavin/Documents/GitProjects/CL/DMPEL/clip', benchmark.name)
     os.makedirs(task_embs_dir, exist_ok=True)
     task_embs_file = os.path.join(task_embs_dir, 'task_embs.pt')
