@@ -165,6 +165,11 @@ def main(args):
 
     # algo.policy.load_state_dict(sd)
     if cfg.lifelong.algo == "DMPEL" or cfg.lifelong.algo == "ACILLearner":
+
+        # # TODO: load pretrain model
+        # pretrain_sd, cfg, previous_mask = torch_load_model("/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/pretraining/diffusion_head_fft/clip_base_libero90/seed_100/multitask_model_ep10.pth", map_location=args.device_id)
+        # algo.policy.load_state_dict(pretrain_sd, strict=False)
+
         algo.policy.init_moe_policy()
         # print(algo.policy)
         for i in range(model + 1):
@@ -196,16 +201,16 @@ def main(args):
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     descriptions = [benchmark.get_task(i).language for i in range(benchmark.n_tasks)]
 
-    # task_embs = get_task_embs(cfg, descriptions)
-    # task_embs_dir = os.path.join('/home/kavin/Documents/GitProjects/CL/DMPEL/clip', benchmark.name)
-    # os.makedirs(task_embs_dir, exist_ok=True)
-    # task_embs_file = os.path.join(task_embs_dir, 'task_embs.pt')
-    #
-    # if os.path.exists(task_embs_file):
-    #     print(f"[info] Loading task embeddings from {task_embs_file}")
-    #     task_embs = torch.load(task_embs_file)
-    # else:
-    task_embs = get_task_embs(cfg, descriptions)  # (n_tasks, emb_dim)
+    task_embs = get_task_embs(cfg, descriptions)
+    task_embs_dir = os.path.join('/home/kavin/Documents/GitProjects/CL/DMPEL/clip', benchmark.name)
+    os.makedirs(task_embs_dir, exist_ok=True)
+    task_embs_file = os.path.join(task_embs_dir, 'task_embs.pt')
+
+    if os.path.exists(task_embs_file):
+        print(f"[info] Loading task embeddings from {task_embs_file}")
+        task_embs = torch.load(task_embs_file)
+    else:
+        task_embs = get_task_embs(cfg, descriptions)  # (n_tasks, emb_dim)
     # torch.save(task_embs, task_embs_file)
     benchmark.set_task_embs(task_embs)
 
