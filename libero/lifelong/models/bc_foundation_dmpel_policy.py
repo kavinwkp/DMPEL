@@ -1115,7 +1115,7 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             if len(self.context_queue) > self.max_seq_len:
                 self.context_queue.pop(0)
             query_in = torch.stack(self.context_queue, dim=0).mean(dim=0)  # (B, T, H_all)
-            topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='train')
+            topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='eval')
             # self.expert_count.append(topk_attn_norm)
             x = self.spatial_encode(data, layer_feature_list)
             # else:
