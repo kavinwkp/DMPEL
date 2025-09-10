@@ -97,7 +97,7 @@ class Sequential(nn.Module, metaclass=AlgoMeta):
 
         self.scheduler = None
         
-        self.scaler = amp.GradScaler()
+        # self.scaler = amp.GradScaler()
 
         self.summary_writer = SummaryWriter(log_dir=self.experiment_dir+'/tblog/'+str(task))
 
@@ -114,12 +114,13 @@ class Sequential(nn.Module, metaclass=AlgoMeta):
         data = self.map_tensor_to_device(data)
         self.optimizer.zero_grad()
         # torch.autograd.set_detect_anomaly(True)  # detect anomaly       
-        with amp.autocast('cuda', dtype=torch.float16):
-            loss = self.policy.compute_loss(data)
+        # with amp.autocast('cuda', dtype=torch.float16):
+        loss = self.policy.compute_loss(data)
         # with torch.autograd.detect_anomaly():
-        self.scaler.scale(self.loss_scale * loss).backward()
+        # self.scaler.scale(self.loss_scale * loss).backward()
+        (self.loss_scale * loss).backward()
         if self.cfg.train.grad_clip is not None:
-            self.scaler.unscale_(self.optimizer)
+            # self.scaler.unscale_(self.optimizer)
             grad_norm = nn.utils.clip_grad_norm_(
                 self.policy.parameters(), self.cfg.train.grad_clip
             )
@@ -128,8 +129,9 @@ class Sequential(nn.Module, metaclass=AlgoMeta):
             #     if tensor.grad is not None:
             #         tensor_grad_norm = torch.norm(tensor.grad)
             #         print(f'[info] {name} grad norm: {tensor_grad_norm}')
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # self.scaler.step(self.optimizer)
+        # self.scaler.update()
+        self.optimizer.step()
         return loss.item()
 
     def eval_observe(self, data):
@@ -150,25 +152,25 @@ class Sequential(nn.Module, metaclass=AlgoMeta):
         model_checkpoint_name = os.path.join(
             self.experiment_dir, f"task{task_id}_model.pth"
         )
-        multiprocessing.set_start_method("fork", force=True)
-        if self.cfg.use_ddp:
-            torch.distributed.barrier()
-            train_dataloader = DataLoader(
-                    dataset,
-                    batch_size=self.cfg.train.batch_size,
-                    num_workers=self.cfg.train.num_workers,
-                    shuffle=False,
-                    sampler=DistributedSampler(dataset),
-                    persistent_workers=True,
+        # multiprocessing.set_start_method("fork", force=True)
+        # if self.cfg.use_ddp:
+        #     torch.distributed.barrier()
+        #     train_dataloader = DataLoader(
+        #             dataset,
+        #             batch_size=self.cfg.train.batch_size,
+        #             num_workers=self.cfg.train.num_workers,
+        #             shuffle=False,
+        #             sampler=DistributedSampler(dataset),
+        #             persistent_workers=True,
+        #     )
+        # else:
+        train_dataloader = DataLoader(
+                dataset,
+                batch_size=self.cfg.train.batch_size,
+                num_workers=self.cfg.train.num_workers,
+                sampler=RandomSampler(dataset),
+                persistent_workers=True,
             )
-        else:
-            train_dataloader = DataLoader(
-                    dataset,
-                    batch_size=self.cfg.train.batch_size,
-                    num_workers=self.cfg.train.num_workers,
-                    sampler=RandomSampler(dataset),
-                    persistent_workers=True,
-                )
 
         self.scheduler = None
         try:
@@ -182,30 +184,31 @@ class Sequential(nn.Module, metaclass=AlgoMeta):
         except:
             pass
 
-        if not self.cfg.use_ddp or int(os.environ["RANK"]) == 0:
-            successes = []
-            losses = []
-            epochs = []
-            peak_memories = []
-            
-            # for evaluate how fast the agent learns on current task, this corresponds
-            # to the area under success rate curve on the new task.
-            cumulated_counter = 0.0
-            idx_at_best_succ = 0
+        # if not self.cfg.use_ddp or int(os.environ["RANK"]) == 0:
+        successes = []
+        losses = []
+        epochs = []
+        peak_memories = []
 
-            prev_success_rate = -1.0
-            # best_state_dict = self.policy.state_dict()  # currently save the best model
+        # for evaluate how fast the agent learns on current task, this corresponds
+        # to the area under success rate curve on the new task.
+        cumulated_counter = 0.0
+        idx_at_best_succ = 0
+
+        prev_success_rate = -1.0
+        # best_state_dict = self.policy.state_dict()  # currently save the best model
 
         task = benchmark.get_task(task_id)
         task_emb = benchmark.get_task_emb(task_id)
 
         # start training
-        for epoch in range(0, self.cfg.train.n_epochs + 1):
+        for epoch in range(0):
+        # for epoch in range(1, self.cfg.train.n_epochs + 1):
 
             t0 = time.time()
 
-            if self.cfg.use_ddp:
-                train_dataloader.sampler.set_epoch(epoch)
+            # if self.cfg.use_ddp:
+            #     train_dataloader.sampler.set_epoch(epoch)
 
             if epoch > 0:  # update
                 self.policy.train()
@@ -228,125 +231,128 @@ class Sequential(nn.Module, metaclass=AlgoMeta):
             else:
                 peak_memory = 0
 
-            if self.cfg.use_ddp:
-                training_loss = torch.as_tensor(training_loss, device=torch.device("cuda:"+os.environ["RANK"]))
-                peak_memory = torch.as_tensor(peak_memory, device=torch.device("cuda:"+os.environ["RANK"]))
-                dataloader_len = torch.as_tensor(len(train_dataloader), device=torch.device("cuda:"+os.environ["RANK"]))
-                
-                training_loss_gather_list = [torch.zeros_like(training_loss) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
-                peak_memory_gather_list = [torch.zeros_like(peak_memory) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
-                dataloader_len_gather_list = [torch.zeros_like(dataloader_len) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            # if self.cfg.use_ddp:
+            #     training_loss = torch.as_tensor(training_loss, device=torch.device("cuda:"+os.environ["RANK"]))
+            #     peak_memory = torch.as_tensor(peak_memory, device=torch.device("cuda:"+os.environ["RANK"]))
+            #     dataloader_len = torch.as_tensor(len(train_dataloader), device=torch.device("cuda:"+os.environ["RANK"]))
+            #
+            #     training_loss_gather_list = [torch.zeros_like(training_loss) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            #     peak_memory_gather_list = [torch.zeros_like(peak_memory) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            #     dataloader_len_gather_list = [torch.zeros_like(dataloader_len) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            #
+            #     dist.gather(training_loss, training_loss_gather_list, dst=0)
+            #     dist.gather(peak_memory, peak_memory_gather_list, dst=0)
+            #     dist.gather(dataloader_len, dataloader_len_gather_list, dst=0)
+            #
+            #     if int(os.environ["RANK"]) == 0:
+            #         training_loss = sum(training_loss_gather_list).item() / sum(dataloader_len_gather_list).item()
+            #         peak_memory = sum(peak_memory_gather_list).item()
+            #         print(
+            #             f'[info] # Batch: {sum(dataloader_len_gather_list).item()} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
+            #             f'Memory utilization: %.3f GB' % peak_memory
+            #         )
+            # else:
+            # training_loss /= len(train_dataloader)
+            print(
+                f'[info] # Batch: {len(train_dataloader)} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
+                f'Memory utilization: %.3f GB' % peak_memory
+            )
+            # # TODO: update EMA
+            # self.policy.policy_head.ema_step()
 
-                dist.gather(training_loss, training_loss_gather_list, dst=0)
-                dist.gather(peak_memory, peak_memory_gather_list, dst=0)
-                dist.gather(dataloader_len, dataloader_len_gather_list, dst=0)
-                
-                if int(os.environ["RANK"]) == 0:
-                    training_loss = sum(training_loss_gather_list).item() / sum(dataloader_len_gather_list).item()
-                    peak_memory = sum(peak_memory_gather_list).item()
-                    print(
-                        f'[info] # Batch: {sum(dataloader_len_gather_list).item()} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
-                        f'Memory utilization: %.3f GB' % peak_memory
-                    )
-            else:
-                training_loss /= len(train_dataloader)
-                print(
-                    f'[info] # Batch: {len(train_dataloader)} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
-                    f'Memory utilization: %.3f GB' % peak_memory
-                )
-            
-            if (not self.cfg.use_ddp) or (int(os.environ["RANK"]) == 0):
-                self.summary_writer.add_scalar("train_loss", training_loss, epoch)
+            # if (not self.cfg.use_ddp) or (int(os.environ["RANK"]) == 0):
+            #     self.summary_writer.add_scalar("train_loss", training_loss, epoch)
                 # for name, param in self.policy.named_parameters():
                     # if not param.requires_grad:
                         # self.summary_writer.add_histogram(f'value/{name}', param, epoch)
                         # self.summary_writer.add_histogram(f'grad/{name}.grad', param.grad, epoch)
                         # self.summary_writer.add_histogram(f'grad/{name}.grad', param.grad, epoch)
 
-            if epoch % self.cfg.eval.eval_every == 0 and (not self.cfg.use_ddp or int(os.environ["RANK"]) == 0) and (not self.cfg.debug_no_eval):  # evaluate BC loss
+            if epoch % self.cfg.eval.eval_every == 0:  # evaluate BC loss
                 # every eval_every epoch, we evaluate the agent on the current task,
                 # then we pick the best performant agent on the current task as
                 # if it stops learning after that specific epoch. So the stopping
                 # criterion for learning a new task is achieving the peak performance
                 # on the new task. Future work can explore how to decide this stopping
                 # epoch by also considering the agent's performance on old tasks.
-                
+                losses.append(training_loss)
+                torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
                 t0 = time.time()
 
-                task_str = f"k{task_id}_e{epoch//self.cfg.eval.eval_every}"
-                sim_states = (
-                    result_summary[task_str] if self.cfg.eval.save_sim_states else None
-                )
-                success_rate = evaluate_one_task_success(
-                    cfg=self.cfg,
-                    algo=self,
-                    task=task,
-                    task_emb=task_emb,
-                    task_id=task_id,
-                    sim_states=sim_states,
-                    task_str="",
-                )
-                
-                epochs.append(epoch)
-                peak_memories.append(peak_memory)
-                losses.append(training_loss)
-                successes.append(success_rate)
-                
-                self.summary_writer.add_scalar("success_rate", success_rate, epoch)
+                # task_str = f"k{task_id}_e{epoch//self.cfg.eval.eval_every}"
+                # sim_states = (
+                #     result_summary[task_str] if self.cfg.eval.save_sim_states else None
+                # )
+                # success_rate = evaluate_one_task_success(
+                #     cfg=self.cfg,
+                #     algo=self,
+                #     task=task,
+                #     task_emb=task_emb,
+                #     task_id=task_id,
+                #     sim_states=sim_states,
+                #     task_str="",
+                # )
+                #
+                # epochs.append(epoch)
+                # peak_memories.append(peak_memory)
+                # losses.append(training_loss)
+                # successes.append(success_rate)
+                #
+                # self.summary_writer.add_scalar("success_rate", success_rate, epoch)
+                #
+                # if prev_success_rate < success_rate:
+                #     torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=True)
+                #     prev_success_rate = success_rate
+                #     idx_at_best_succ = len(losses) - 1
+                #
+                #     cumulated_counter += 1.0
+                #     ci = confidence_interval(success_rate, self.cfg.eval.n_eval)
+                #     tmp_successes = np.array(successes)
+                #     tmp_successes[idx_at_best_succ:] = successes[idx_at_best_succ]
+                #
+                # t1 = time.time()
+                # print(
+                #     f"[info] Epoch: {epoch:3d} | succ: {success_rate:4.2f} ± {ci:4.2f} | best succ: {prev_success_rate} "
+                #     + f"| succ. AoC {tmp_successes.sum()/cumulated_counter:4.2f} | time: {(t1-t0)/60:4.2f}",
+                #     flush=True,
+                # )
 
-                if prev_success_rate < success_rate:
-                    torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=True)
-                    prev_success_rate = success_rate
-                    idx_at_best_succ = len(losses) - 1
-
-                    cumulated_counter += 1.0
-                    ci = confidence_interval(success_rate, self.cfg.eval.n_eval)
-                    tmp_successes = np.array(successes)
-                    tmp_successes[idx_at_best_succ:] = successes[idx_at_best_succ]
-                
-                t1 = time.time()
-                print(
-                    f"[info] Epoch: {epoch:3d} | succ: {success_rate:4.2f} ± {ci:4.2f} | best succ: {prev_success_rate} "
-                    + f"| succ. AoC {tmp_successes.sum()/cumulated_counter:4.2f} | time: {(t1-t0)/60:4.2f}",
-                    flush=True,
-                )
-
-            if self.cfg.use_ddp:
-                torch.distributed.barrier()
+            # if self.cfg.use_ddp:
+            #     torch.distributed.barrier()
         
         # load the best performance agent on the current task
-        if (not self.cfg.debug_no_eval):
-            msg = self.policy.load_state_dict(torch_load_model(model_checkpoint_name)[0], strict=False)
-            # print(f'[info] {msg}')
+        # if (not self.cfg.debug_no_eval):
+        #     msg = self.policy.load_state_dict(torch_load_model(model_checkpoint_name)[0], strict=False)
+        #     # print(f'[info] {msg}')
 
-        torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=True)
+        # torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=True)
         # end learning the current task, some algorithms need post-processing
         self.end_task(dataset, task_id, benchmark)
         
-        if (not self.cfg.use_ddp or int(os.environ["RANK"]) == 0) and (not self.cfg.debug_no_eval):
-            # return the metrics regarding forward transfer
-            losses = np.array(losses)
-            successes = np.array(successes)
-            epochs = np.array(epochs)
-            peak_memories = np.array(peak_memories)
-            auc_checkpoint_name = os.path.join(
-                self.experiment_dir, f"task{task_id}_auc.log"
-            )
-            torch.save(
-                {   "epochs": epochs,
-                    "success": successes,
-                    "loss": losses,
-                    "peak_memories": peak_memories,
-                },
-                auc_checkpoint_name,
-            )
+        # if (not self.cfg.use_ddp or int(os.environ["RANK"]) == 0) and (not self.cfg.debug_no_eval):
+        # return the metrics regarding forward transfer
+        losses = np.array(losses)
+        successes = np.array(successes)
+        epochs = np.array(epochs)
+        peak_memories = np.array(peak_memories)
+        auc_checkpoint_name = os.path.join(
+            self.experiment_dir, f"task{task_id}_auc.log"
+        )
+        torch.save(
+            {   "epochs": epochs,
+                "success": successes,
+                "loss": losses,
+                "peak_memories": peak_memories,
+            },
+            auc_checkpoint_name,
+        )
 
-            # pretend that the agent stops learning once it reaches the peak performance
-            losses[idx_at_best_succ:] = losses[idx_at_best_succ]
-            successes[idx_at_best_succ:] = successes[idx_at_best_succ]
-            return successes.sum() / cumulated_counter, losses.sum() / cumulated_counter
-        else:
-            return 0.0, 0.0
+        # pretend that the agent stops learning once it reaches the peak performance
+        # losses[idx_at_best_succ:] = losses[idx_at_best_succ]
+        # successes[idx_at_best_succ:] = successes[idx_at_best_succ]
+        # return successes.sum() / cumulated_counter, losses.sum() / cumulated_counter
+        # else:
+        #     return 0.0, 0.0
 
     def reset(self):
         self.policy.reset()

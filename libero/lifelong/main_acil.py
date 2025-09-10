@@ -210,34 +210,36 @@ def main(hydra_cfg):
         #     torch.cuda.set_device(device)
         #     algo = CustomDDP(algo.to(device), device_ids=[device], output_device=device)
         # else:
-        algo = safe_device(algo, cfg.device)
+        # algo = safe_device(algo, cfg.device)
         # print(algo.policy)
 
         if cfg.pretrain_model_path != "":  # load a pretrained model if there is any
-            try:
-                sd = torch_load_model(cfg.pretrain_model_path)[0]
-                msg = algo.policy.load_state_dict(sd, strict=True)
-                print(msg)
-            except:
-                print(
-                    f"[error] cannot load pretrained model from {cfg.pretrain_model_path}"
-                )
-                sys.exit(0)
+            # try:
+            sd = torch_load_model(cfg.pretrain_model_path)[0]
+            msg = algo.policy.load_state_dict(sd, strict=False)
+            # print(msg)
+            # except:
+            #     print(
+            #         f"[error] cannot load pretrained model from {cfg.pretrain_model_path}"
+            #     )
+            #     sys.exit(0)
         algo.policy.init_lora()
+        algo = safe_device(algo, cfg.device)
+        # print(algo.policy)
 
     elif cfg.lifelong.algo == "ACILLearner":
         algo = get_algo_class(cfg.lifelong.algo)(n_tasks, cfg)
         # print(algo.policy)
         if cfg.pretrain_model_path != "":
-            try:
-                sd = torch_load_model(cfg.pretrain_model_path)[0]
-                msg = algo.policy.load_state_dict(sd, strict=True)
-                print(msg)
-            except:
-                print(
-                    f"[error] cannot load pretrained model from {cfg.pretrain_model_path}"
-                )
-                sys.exit(0)
+            # try:
+            sd = torch_load_model(cfg.pretrain_model_path)[0]
+            msg = algo.policy.load_state_dict(sd, strict=False)
+            # print(msg)
+            # except:
+            #     print(
+            #         f"[error] cannot load pretrained model from {cfg.pretrain_model_path}"
+            #     )
+            #     sys.exit(0)
             algo.policy.init_moe_policy()
         else:
             algo.policy.init_moe_policy()
@@ -506,7 +508,9 @@ def main(hydra_cfg):
     #         raise NotImplementedError
     # else:
     # for i in range(n_tasks):
-    for i in range(1):
+
+    task_id = int(cfg.exp[-1])
+    for i in range(task_id, task_id+1):
         # if not cfg.use_ddp or int(os.environ["RANK"]) == 0:
         print(f"[info] start training on task {i}", flush=True)
 
