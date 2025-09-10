@@ -47,7 +47,9 @@ class ACILLearner(Sequential):
 
         self.acil_router = ACIL(
             backbone_output_size=2057,
-            buffer_size=8192,
+            # buffer_size=1024,
+            buffer_size=4096,
+            # buffer_size=8192,
             out_features=out_features,
             gamma=0.1,
             device=self.cfg.device,
@@ -57,6 +59,9 @@ class ACILLearner(Sequential):
 
         if task_id > 0:
             router_checkpoint_name = f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}/run_00{task_id-1}/seed_100/acil{task_id-1}_router.pth"
+            # router_checkpoint_name = f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}_E1024/run_00{task_id-1}/seed_100/acil{task_id-1}_router.pth"
+            # router_checkpoint_name = f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}_E4096/run_00{task_id-1}/seed_100/acil{task_id-1}_router.pth"
+            # router_checkpoint_name = f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}_top1/run_00{task_id-1}/seed_100/acil{task_id-1}_router.pth"
             self.acil_router.load_state_dict(torch_load_model(router_checkpoint_name)[0])
             print(f'[info] load router from {router_checkpoint_name}')
 
@@ -245,8 +250,8 @@ class ACILLearner(Sequential):
 
         # TODO: used to freeze prior task and train current task
         if task_id > 0:
-            self.policy.load_state_dict(torch_load_model(f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}/run_00{task_id-1}/seed_100/task{task_id-1}_model.pth")[0])
-            print(f'[info] load model from experiments/lifelong/acil/{benchmark.name}/run_00{task_id-1}/seed_100/task{task_id-1}_model.pth')
+            self.policy.load_state_dict(torch_load_model(f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/{benchmark.name}_top1/run_00{task_id-1}/seed_100/task{task_id-1}_model.pth")[0], strict=False)
+            print(f'[info] load model from experiments/lifelong/acil/{benchmark.name}_top1/run_00{task_id-1}/seed_100/task{task_id-1}_model.pth')
 
         self.policy.add_new_and_freeze_previous(self.cfg.policy.ll_expert_per_task)
 
@@ -319,57 +324,57 @@ class ACILLearner(Sequential):
             #     self.summary_writer.add_scalar("bc/peak_memory", peak_memory, epoch)
 
             if epoch % self.cfg.eval.eval_every == 0:  # evaluate BC loss
-                training_losses.append(training_loss_avg)
+                # training_losses.append(training_loss_avg)
                 # if training_loss_avg < prev_train_loss:
                 # model_checkpoint_name = os.path.join(
                 #     self.experiment_dir, f"task{task_id}_model_ep{epoch}.pth"
                 # )
-                torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
-                prev_success_rate = training_loss_avg
+                # torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=True)
+                # prev_success_rate = training_loss_avg
 
-                # t0 = time.time()
-                #
-                # task_str = f"k{task_id}_e{epoch//self.cfg.eval.eval_every}"
-                # sim_states = (
-                #     result_summary[task_str] if self.cfg.eval.save_sim_states else None
-                # )
-                #
-                # success_rate = evaluate_one_task_success(
-                #     cfg=self.cfg,
-                #     algo=self,
-                #     task=task,
-                #     task_emb=task_emb,
-                #     task_id=task_id,
-                #     sim_states=sim_states,
-                #     task_str="",
-                # )
-                #
-                # epochs.append(epoch)
-                # peak_memories.append(peak_memory)
-                # training_losses.append(training_loss_avg)
-                # successes.append(success_rate)
-                #
-                # self.summary_writer.add_scalar("success_rate", success_rate, epoch)
-                #
-                # if prev_success_rate < success_rate:
-                #     torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=True)
-                #     prev_success_rate = success_rate
-                #     idx_at_best_succ = len(training_losses) - 1
-                #
-                #     cumulated_counter += 1.0
-                #     ci = confidence_interval(success_rate, self.cfg.eval.n_eval)
-                #     tmp_successes = np.array(successes)
-                #     tmp_successes[idx_at_best_succ:] = successes[idx_at_best_succ]
-                #
-                # t1 = time.time()
-                # print(
-                #     f"[info] Epoch: {epoch:3d} | succ: {success_rate:4.2f} ± {ci:4.2f} | best succ: {prev_success_rate} "
-                #     + f"| succ. AoC {tmp_successes.sum()/cumulated_counter:4.2f} | time: {(t1-t0)/60:4.2f}",
-                #     flush=True,
-                # )
+                t0 = time.time()
 
-        # self.policy.load_state_dict(torch_load_model(model_checkpoint_name)[0], strict=True)
-        # torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
+                task_str = f"k{task_id}_e{epoch//self.cfg.eval.eval_every}"
+                sim_states = (
+                    result_summary[task_str] if self.cfg.eval.save_sim_states else None
+                )
+
+                success_rate = evaluate_one_task_success(
+                    cfg=self.cfg,
+                    algo=self,
+                    task=task,
+                    task_emb=task_emb,
+                    task_id=task_id,
+                    sim_states=sim_states,
+                    task_str="",
+                )
+
+                epochs.append(epoch)
+                peak_memories.append(peak_memory)
+                training_losses.append(training_loss_avg)
+                successes.append(success_rate)
+
+                self.summary_writer.add_scalar("success_rate", success_rate, epoch)
+
+                if prev_success_rate < success_rate:
+                    torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
+                    prev_success_rate = success_rate
+                    idx_at_best_succ = len(training_losses) - 1
+
+                    cumulated_counter += 1.0
+                    ci = confidence_interval(success_rate, self.cfg.eval.n_eval)
+                    tmp_successes = np.array(successes)
+                    tmp_successes[idx_at_best_succ:] = successes[idx_at_best_succ]
+
+                t1 = time.time()
+                print(
+                    f"[info] Epoch: {epoch:3d} | succ: {success_rate:4.2f} ± {ci:4.2f} | best succ: {prev_success_rate} "
+                    + f"| succ. AoC {tmp_successes.sum()/cumulated_counter:4.2f} | time: {(t1-t0)/60:4.2f}",
+                    flush=True,
+                )
+
+        self.policy.load_state_dict(torch_load_model(model_checkpoint_name)[0], strict=True)
+        torch_save_model(self.policy, model_checkpoint_name, cfg=self.cfg, learnable_only=False)
 
         self.end_task(dataset, task_id, benchmark)
 
