@@ -124,7 +124,7 @@ def count_policy_parameters(algo, cfg):
         #         counter_list["spatial_lora"] += torch.numel(tensor)
         #     elif "temporal" in layer_tensor_name:
         #         counter_list["temporal_lora"] += torch.numel(tensor)
-        print('{}: {}, {}'.format(layer_tensor_name, torch.numel(tensor), tensor.requires_grad))
+        # print('{}: {}, {}'.format(layer_tensor_name, torch.numel(tensor), tensor.requires_grad))
     print(counter_list)
     # macs, params = profile(model, inputs=(data,), verbose=False, report_missing=True)
     # from torchtnt.utils.flops import FlopTensorDispatchMode
@@ -134,11 +134,11 @@ def count_policy_parameters(algo, cfg):
     #     sum_flops = sum(flops[''].values())
     # GFLOPs = sum_flops * 2 / 1e9
     total_params = sum(p.numel() for p in model.parameters())
-    print("Total parameters: {}".format(total_params))
+    print(f"Total parameters: {total_params/1e6:.2f} M")
     trainable_params = sum(p.numel() for p in model.parameters() if (not p.requires_grad))
-    print("Frozen parameters: {}".format(trainable_params))
+    print(f"Frozen parameters: {trainable_params/1e6:.2f} M")
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("Trainable parameters: {}".format(trainable_params))
+    print(f"Trainable parameters: {trainable_params/1e6:.2f} M")
     del model
     return counter_list, total_params, trainable_params
     # return GFLOPs, MParams
