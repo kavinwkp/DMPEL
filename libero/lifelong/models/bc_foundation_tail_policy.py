@@ -19,9 +19,10 @@ from libero.lifelong.models.modules.rgb_modules import *
 from libero.lifelong.models.modules.language_modules import *
 from libero.lifelong.models.modules.transformer_modules import *
 from libero.lifelong.models.base_policy import BasePolicy
+from libero.lifelong.models.AnalyticLinear import ACIL, DSAL
 from libero.lifelong.models.policy_head import *
 from libero.lifelong.models.bc_transformer_policy import ExtraModalityTokens
-
+from libero.lifelong.models.diffusion_head import DiffusionPolicy
 
 
 def reshape_transform(tensor, h, w):
@@ -47,7 +48,7 @@ class BCFoundationTailPolicy(BasePolicy):
         text_encoder_kwargs = policy_cfg.language_encoder.network_kwargs
         text_encoder_kwargs.lora_cfg = policy_cfg.language_encoder.adapter
         # self.shape_meta = shape_meta
-        self.embed_size = policy_cfg.embed_size
+        self.embed_size = policy_cfg.embed_size     # 768
 
         ### 1. encode image
         self.image_encoders = {}
@@ -98,24 +99,39 @@ class BCFoundationTailPolicy(BasePolicy):
 
         self.temporal_transformer = TransformerDecoder(
             input_size=self.embed_size,
-            num_layers=policy_cfg.transformer_num_layers,
-            num_heads=policy_cfg.transformer_num_heads,
-            head_output_size=policy_cfg.transformer_head_output_size,
-            mlp_hidden_size=policy_cfg.transformer_mlp_hidden_size,
-            dropout=policy_cfg.transformer_dropout,
-            use_lora=policy_cfg.use_lora,
-            fullft=policy_cfg.fullft,
-            lora_cfg=policy_cfg.adapter,
+            num_layers=policy_cfg.transformer_num_layers,   # 6
+            num_heads=policy_cfg.transformer_num_heads,     # 8
+            head_output_size=policy_cfg.transformer_head_output_size,   # 96
+            mlp_hidden_size=policy_cfg.transformer_mlp_hidden_size,     # 1024
+            dropout=policy_cfg.transformer_dropout, # 0.15
+            use_lora=policy_cfg.use_lora,   # LoRAqkv
+            fullft=policy_cfg.fullft,       # false
+            lora_cfg=policy_cfg.adapter,    # lora16
         )
 
-        policy_head_kwargs = policy_cfg.policy_head.network_kwargs
-        policy_head_kwargs.input_size = self.embed_size
-        policy_head_kwargs.output_size = shape_meta["ac_dim"]
+        # policy_head_kwargs = policy_cfg.policy_head.network_kwargs
+        # policy_head_kwargs.input_size = self.embed_size
+        # policy_head_kwargs.output_size = shape_meta["ac_dim"]
+        #
+        # self.policy_head = eval(policy_cfg.policy_head.network)(
+        #     **policy_cfg.policy_head.loss_kwargs,
+        #     **policy_cfg.policy_head.network_kwargs
+        # )
 
-        self.policy_head = eval(policy_cfg.policy_head.network)(
-            **policy_cfg.policy_head.loss_kwargs,
-            **policy_cfg.policy_head.network_kwargs
-        )
+        self.num_queries = cfg.data.seq_len
+        self.step = 0
+
+        # self.policy_head = nn.Linear(self.embed_size, shape_meta["ac_dim"] * self.num_queries)
+
+        self.policy_head = DiffusionPolicy(obs_dim=self.embed_size,
+                                           act_dim=shape_meta["ac_dim"],
+                                           obs_horizon=10,
+                                           pred_horizon=cfg.data.seq_len,
+                                           hidden_dim=self.embed_size,
+                                           num_layers=2,
+                                           policy_type="transformer",
+                                           device=cfg.device)
+        self.all_time_actions = torch.zeros((20, 600, 600 + self.num_queries, shape_meta["ac_dim"])).to(cfg.device)
 
         self.latent_queue = []
         self.max_seq_len = policy_cfg.transformer_max_seq_len
@@ -124,7 +140,110 @@ class BCFoundationTailPolicy(BasePolicy):
         self.reshape_transform = lambda x: reshape_transform(
             x, self.image_encoder_spatial[0].h, self.image_encoder_spatial[1].w
         )
-        
+
+        # for param in self.extra_encoder.parameters():
+        #     param.requires_grad = False
+        #
+        # for param in self.fusion_module.parameters():
+        #     param.requires_grad = False
+        #
+        # for param in self.policy_head.parameters():
+        #     param.requires_grad = False
+
+    # def init_policy_head(self):
+    #     self.policy_head = ACIL(
+    #         backbone_output_size=768,
+    #         buffer_size=8192,
+    #         out_features=350,
+    #         gamma=0.1,
+    #         device=self.cfg.device,
+    #         dtype=torch.double)
+    #
+    #     # self.policy_head = DSAL(
+    #     #     backbone_output_size=768,
+    #     #     buffer_size=8192,
+    #     #     out_features=350,
+    #     #     device=self.cfg.device,
+    #     #     dtype=torch.double)
+    #
+    #     print(self.policy_head)
+
+    def init_lora(self):
+        self.image_encoder_spatial.init_lora()
+        self.language_encoder_spatial.init_lora()
+        self.temporal_transformer.init_lora()
+
+        self.lora_rank = 16
+
+        for i, encoder in enumerate(self.extra_encoder.encoders):
+            for j, orig_linear in enumerate(encoder):
+                if isinstance(orig_linear, nn.Linear):
+                    moe_linear = LoRA(orig_linear, dim=orig_linear.in_features, rank=self.lora_rank, dim_out=orig_linear.out_features)
+                    self.extra_encoder.encoders[i][j] = moe_linear
+
+        for i, orig_linear in enumerate(self.fusion_module):
+            if isinstance(orig_linear, nn.Linear):
+                moe_linear = LoRA(orig_linear, dim=orig_linear.in_features, rank=self.lora_rank, dim_out=orig_linear.out_features)
+                self.fusion_module[i] = moe_linear
+
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.encoder[0], dim=self.policy_head.noise_pred_net.encoder[0].in_features, rank=self.lora_rank, dim_out=self.policy_head.noise_pred_net.encoder[0].out_features)
+        # self.policy_head.noise_pred_net.encoder[0] = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.encoder[2], dim=self.policy_head.noise_pred_net.encoder[2].in_features, rank=self.lora_rank, dim_out=self.policy_head.noise_pred_net.encoder[2].out_features)
+        # self.policy_head.noise_pred_net.encoder[2] = moe_linear
+        #
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj, dim=self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj, dim=self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj, dim=self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj, dim=self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
+        #
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear1, dim=self.policy_head.noise_pred_net.decoder.layers[0].linear1.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.noise_pred_net.decoder.layers[0].linear1.out_features)
+        # self.policy_head.noise_pred_net.decoder.layers[0].linear1 = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[0].linear2, dim=self.policy_head.noise_pred_net.decoder.layers[0].linear2.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.noise_pred_net.decoder.layers[0].linear2.out_features)
+        # self.policy_head.noise_pred_net.decoder.layers[0].linear2 = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear1, dim=self.policy_head.noise_pred_net.decoder.layers[1].linear1.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.noise_pred_net.decoder.layers[1].linear1.out_features)
+        # self.policy_head.noise_pred_net.decoder.layers[1].linear1 = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.decoder.layers[1].linear2, dim=self.policy_head.noise_pred_net.decoder.layers[1].linear2.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.noise_pred_net.decoder.layers[1].linear2.out_features)
+        # self.policy_head.noise_pred_net.decoder.layers[1].linear2 = moe_linear
+        # moe_linear = LoRA(self.policy_head.noise_pred_net.head, dim=self.policy_head.noise_pred_net.head.in_features, rank=self.lora_rank, dim_out=self.policy_head.noise_pred_net.head.out_features)
+        # self.policy_head.noise_pred_net.head = moe_linear
+        #
+        # # TODO: ema
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.encoder[0], dim=self.policy_head.ema_noise_pred_net.encoder[0].in_features, rank=self.lora_rank, dim_out=self.policy_head.ema_noise_pred_net.encoder[0].out_features)
+        # self.policy_head.ema_noise_pred_net.encoder[0] = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.encoder[2], dim=self.policy_head.ema_noise_pred_net.encoder[2].in_features, rank=self.lora_rank, dim_out=self.policy_head.ema_noise_pred_net.encoder[2].out_features)
+        # self.policy_head.ema_noise_pred_net.encoder[2] = moe_linear
+        #
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj, dim=self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[0].self_attn.out_proj = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj, dim=self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[0].multihead_attn.out_proj = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj, dim=self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[1].self_attn.out_proj = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj, dim=self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj.in_features, rank=self.lora_rank)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[1].multihead_attn.out_proj = moe_linear
+        #
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1, dim=self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1.out_features)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[0].linear1 = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2, dim=self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2.out_features)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[0].linear2 = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1, dim=self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1.out_features)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[1].linear1 = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2, dim=self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.in_features, rank=self.lora_rank,
+        #                   dim_out=self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2.out_features)
+        # self.policy_head.ema_noise_pred_net.decoder.layers[1].linear2 = moe_linear
+        # moe_linear = LoRA(self.policy_head.ema_noise_pred_net.head, dim=self.policy_head.ema_noise_pred_net.head.in_features, rank=self.lora_rank, dim_out=self.policy_head.ema_noise_pred_net.head.out_features)
+        # self.policy_head.ema_noise_pred_net.head = moe_linear
 
     def spatial_encode(self, data):
         # 1. encode image
@@ -170,11 +289,19 @@ class BCFoundationTailPolicy(BasePolicy):
         x = x.reshape(*sh)
         return x[:, :, 0]  # (B, T, E)
 
+    def calc(self, data):
+        x = self.spatial_encode(data)  # (B, T, num_modality, E)
+        x = self.temporal_encode(x)  # (B, T, E)
+        return x
+
     def forward(self, data):
         x = self.spatial_encode(data)  # (B, T, num_modality, E)
         x = self.temporal_encode(x)  # (B, T, E)
-        dist = self.policy_head(x)
-        return dist
+        # action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1)  # (bs,1,70) -> (bs,10,7)
+        action = self.policy_head(obs_seq=x, action_seq=data["actions"])  # (bs,1,70) -> (bs,10,7)
+        return action
+        # dist = self.policy_head(x)
+        # return dist
 
     def get_action(self, data):
         self.eval()
@@ -182,14 +309,45 @@ class BCFoundationTailPolicy(BasePolicy):
             with amp.autocast('cuda', dtype=torch.float16):
                 data = self.preprocess_input(data, train_mode=False)
                 x = self.spatial_encode(data)
-                self.latent_queue.append(x)
-                if len(self.latent_queue) > self.max_seq_len:
-                    self.latent_queue.pop(0)
-                x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
+                # self.latent_queue.append(x)
+                # if len(self.latent_queue) > self.max_seq_len:
+                #     self.latent_queue.pop(0)
+                # x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
                 x = self.temporal_encode(x)
-                dist = self.policy_head(x[:, -1])
-        action = dist.sample().detach().cpu()
-        return action.view(action.shape[0], -1).numpy()
+                # dist = self.policy_head(x[:, -1])
+                # action = self.policy_head(obs_seq=x, action_seq=None)  # (bs, 10, 7)
+                action = self.policy_head(x).reshape(x.shape[0], self.num_queries, -1).to(torch.float32)
+        # action = dist.sample().detach().cpu()
+        # return action.view(action.shape[0], -1).numpy()
+        bs = action.shape[0]
+        actions = []
+        for i in range(bs):
+            self.all_time_actions[i, [self.step], self.step: self.step + self.num_queries] = action[[i]]
+            actions_for_curr_step = self.all_time_actions[i, :, self.step]
+            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+            actions_for_curr_step = actions_for_curr_step[actions_populated]
+            k = 0.01
+            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+            exp_weights = exp_weights / exp_weights.sum()
+            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+            action_chunk = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)  # (bs, 7)
+            actions.append(action_chunk)
+        actions = torch.cat(actions, dim=0)
+        self.step += 1
+        return actions.detach().cpu().numpy()  # (bs, 7)
 
     def reset(self):
         self.latent_queue = []
+        self.step = 0
+        self.all_time_actions.zero_()
+
+    def compute_loss(self, data, reduction="mean"):
+        data = self.preprocess_input(data, train_mode=True)
+        # action = self.forward(data)
+        # loss = F.l1_loss(action, data["actions"], reduction=reduction)
+
+        output = self.forward(data)
+        noise_pred = output['noise_pred']
+        noise = output['noise']
+        loss = F.mse_loss(noise_pred, noise, reduction=reduction)
+        return loss
