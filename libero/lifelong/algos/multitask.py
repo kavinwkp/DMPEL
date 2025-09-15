@@ -32,25 +32,25 @@ class Multitask(Sequential):
         )
         all_tasks = list(range(benchmark.n_tasks))
 
-        multiprocessing.set_start_method("fork", force=True)
-        if self.cfg.use_ddp:
-            torch.distributed.barrier()
-            train_dataloader = DataLoader(
-                    concat_dataset,
-                    batch_size=self.cfg.train.batch_size,
-                    num_workers=self.cfg.train.num_workers,
-                    shuffle=False,
-                    sampler=DistributedSampler(concat_dataset),
-                    persistent_workers=True,
+        # multiprocessing.set_start_method("fork", force=True)
+        # if self.cfg.use_ddp:
+        #     torch.distributed.barrier()
+        #     train_dataloader = DataLoader(
+        #             concat_dataset,
+        #             batch_size=self.cfg.train.batch_size,
+        #             num_workers=self.cfg.train.num_workers,
+        #             shuffle=False,
+        #             sampler=DistributedSampler(concat_dataset),
+        #             persistent_workers=True,
+        #     )
+        # else:
+        train_dataloader = DataLoader(
+                concat_dataset,
+                batch_size=self.cfg.train.batch_size,
+                num_workers=self.cfg.train.num_workers,
+                sampler=RandomSampler(concat_dataset),
+                persistent_workers=True,
             )
-        else:
-            train_dataloader = DataLoader(
-                    concat_dataset,
-                    batch_size=self.cfg.train.batch_size,
-                    num_workers=self.cfg.train.num_workers,
-                    sampler=RandomSampler(concat_dataset),
-                    persistent_workers=True,
-                )
 
         if self.cfg.train.scheduler is not None:
             self.cfg.train.scheduler.kwargs["epochs"] = self.cfg.train.n_epochs
@@ -61,27 +61,27 @@ class Multitask(Sequential):
                 **self.cfg.train.scheduler.kwargs,
             )
         
-        if not self.cfg.use_ddp or int(os.environ["RANK"]) == 0:
-            successes = []
-            losses = []
-            epochs = []
-            peak_memories = []
-            times = []
-            
-            # for evaluate how fast the agent learns on current task, this corresponds
-            # to the area under success rate curve on the new task.
-            cumulated_counter = 0.0
-            idx_at_best_succ = 0
+        # if not self.cfg.use_ddp or int(os.environ["RANK"]) == 0:
+        successes = []
+        losses = []
+        epochs = []
+        peak_memories = []
+        times = []
 
-            prev_success_rate = -1.0
+        # for evaluate how fast the agent learns on current task, this corresponds
+        # to the area under success rate curve on the new task.
+        cumulated_counter = 0.0
+        idx_at_best_succ = 0
+
+        prev_success_rate = -1.0
 
         # start training
-        for epoch in range(0, self.cfg.train.n_epochs + 1):
+        for epoch in range(1, self.cfg.train.n_epochs + 1):
 
             t0 = time.time()
 
-            if self.cfg.use_ddp:
-                train_dataloader.sampler.set_epoch(epoch)            
+            # if self.cfg.use_ddp:
+            #     train_dataloader.sampler.set_epoch(epoch)
 
             if epoch > 0 or (self.cfg.pretrain):  # update
                 self.policy.train()
@@ -106,36 +106,39 @@ class Multitask(Sequential):
             else:
                 peak_memory = 0
 
-            if self.cfg.use_ddp:
-                training_loss = torch.as_tensor(training_loss, device=torch.device("cuda:"+os.environ["RANK"]))
-                peak_memory = torch.as_tensor(peak_memory, device=torch.device("cuda:"+os.environ["RANK"]))
-                dataloader_len = torch.as_tensor(len(train_dataloader), device=torch.device("cuda:"+os.environ["RANK"]))
-                
-                training_loss_gather_list = [torch.zeros_like(training_loss) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
-                peak_memory_gather_list = [torch.zeros_like(peak_memory) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
-                dataloader_len_gather_list = [torch.zeros_like(dataloader_len) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            # if self.cfg.use_ddp:
+            #     training_loss = torch.as_tensor(training_loss, device=torch.device("cuda:"+os.environ["RANK"]))
+            #     peak_memory = torch.as_tensor(peak_memory, device=torch.device("cuda:"+os.environ["RANK"]))
+            #     dataloader_len = torch.as_tensor(len(train_dataloader), device=torch.device("cuda:"+os.environ["RANK"]))
+            #
+            #     training_loss_gather_list = [torch.zeros_like(training_loss) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            #     peak_memory_gather_list = [torch.zeros_like(peak_memory) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            #     dataloader_len_gather_list = [torch.zeros_like(dataloader_len) for _ in range(dist.get_world_size())] if int(os.environ["RANK"]) == 0 else None
+            #
+            #     dist.gather(training_loss, training_loss_gather_list, dst=0)
+            #     dist.gather(peak_memory, peak_memory_gather_list, dst=0)
+            #     dist.gather(dataloader_len, dataloader_len_gather_list, dst=0)
+            #
+            #     if int(os.environ["RANK"]) == 0:
+            #         training_loss = sum(training_loss_gather_list).item() / sum(dataloader_len_gather_list).item()
+            #         peak_memory = sum(peak_memory_gather_list).item()
+            #
+            #         print(
+            #             f'[info] GPU: {int(os.environ["RANK"])} | # Batch: {sum(dataloader_len_gather_list).item()} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
+            #             f'Memory utilization: %.3f GB' % peak_memory,
+            #             flush=True,
+            #         )
+            #
+            # else:
+            # training_loss /= len(train_dataloader)
+            print(
+                f'[info] # Batch: {len(train_dataloader)} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
+                f'Memory utilization: %.3f GB' % peak_memory,
+                flush=True,
+            )
 
-                dist.gather(training_loss, training_loss_gather_list, dst=0)
-                dist.gather(peak_memory, peak_memory_gather_list, dst=0)
-                dist.gather(dataloader_len, dataloader_len_gather_list, dst=0)
-                
-                if int(os.environ["RANK"]) == 0:
-                    training_loss = sum(training_loss_gather_list).item() / sum(dataloader_len_gather_list).item()
-                    peak_memory = sum(peak_memory_gather_list).item()
-
-                    print(
-                        f'[info] GPU: {int(os.environ["RANK"])} | # Batch: {sum(dataloader_len_gather_list).item()} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
-                        f'Memory utilization: %.3f GB' % peak_memory,
-                        flush=True,
-                    )
-
-            else:
-                training_loss /= len(train_dataloader)
-                print(
-                    f'[info] # Batch: {len(train_dataloader)} | Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f} | '
-                    f'Memory utilization: %.3f GB' % peak_memory,
-                    flush=True,
-                )
+            # TODO: update EMA
+            self.policy.policy_head.ema_step()
 
             if (not self.cfg.use_ddp) or (int(os.environ["RANK"]) == 0):
                 self.summary_writer.add_scalar("train_loss", training_loss, epoch)
@@ -147,7 +150,7 @@ class Multitask(Sequential):
                         # if param.grad is not None:
                         #     self.summary_writer.add_histogram(f'grad/{name}.grad', param.grad, epoch)
             
-            if epoch % self.cfg.eval.eval_every == 0 and epoch > 0 and (not self.cfg.use_ddp or int(os.environ["RANK"]) == 0):  # evaluate BC loss
+            if epoch % self.cfg.eval.eval_every == 0:  # evaluate BC loss
                 t0 = time.time()
                 
                 self.policy.eval()
@@ -155,7 +158,7 @@ class Multitask(Sequential):
                 model_checkpoint_name_ep = os.path.join(
                     self.experiment_dir, f"multitask_model_ep{epoch}.pth"
                 )
-                torch_save_model(self.policy, model_checkpoint_name_ep, cfg=self.cfg, learnable_only=True)
+                torch_save_model(self.policy, model_checkpoint_name_ep, cfg=self.cfg, learnable_only=False)
                 losses.append(training_loss)
 
                 # for multitask learning, we provide an option whether to evaluate
