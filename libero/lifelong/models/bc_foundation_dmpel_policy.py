@@ -646,6 +646,7 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         )
 
         self.expert_count = []
+        self.expert_weight = []
 
     def init_moe_policy(self):
         for k, v in self.named_parameters():
@@ -899,6 +900,7 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             # buffer_size=1024,
             buffer_size=4096,
             # buffer_size=8192,
+            # buffer_size=12288,
             out_features=self.pool_size * 6,
             gamma=0.1,
             device=self.cfg.device,
@@ -1104,7 +1106,7 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
         # dist, query_in, topk_idx, topk_attn_norm = self.forward(data)
         return query_in, coeff
 
-    def get_action(self, data):
+    def get_action(self, data, mode='train'):
         self.eval()
         with torch.no_grad():
             # with amp.autocast('cuda', dtype=torch.float16):
@@ -1115,8 +1117,9 @@ class BCFoundationDmpelPolicy(BCFoundationTailPolicy):
             if len(self.context_queue) > self.max_seq_len:
                 self.context_queue.pop(0)
             query_in = torch.stack(self.context_queue, dim=0).mean(dim=0)  # (B, T, H_all)
-            topk_idx, topk_attn_norm = self.infer_lora(query_in, mode='eval')
-            # self.expert_count.append(topk_attn_norm)
+            topk_idx, topk_attn_norm = self.infer_lora(query_in, mode=mode)   # 'train' for eval_in_train
+            # self.expert_count.append(topk_idx.detach().cpu())
+            # self.expert_weight.append(topk_attn_norm.detach().cpu())
             x = self.spatial_encode(data, layer_feature_list)
             # else:
             #     if self.query_use_proprio:
