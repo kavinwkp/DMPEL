@@ -31,7 +31,7 @@ class LoRA(nn.Module):
         dim: int,
         rank: int = 16,
         alpha: int = 16, # scale = alpha / rank
-        # dim_out: int = 0
+        dim_out: int = 0
     ):
         super().__init__()
         self.weight = projection.weight
@@ -40,10 +40,10 @@ class LoRA(nn.Module):
         self.rank = rank
         self.scale = alpha / rank
         self.A = nn.Linear(dim, rank, bias=False)
-        # if dim_out != 0:
-        #     self.B = nn.Linear(rank, dim_out, bias=False)
-        # else:
-        self.B = nn.Linear(rank, dim, bias=False)
+        if dim_out != 0:
+            self.B = nn.Linear(rank, dim_out, bias=False)
+        else:
+            self.B = nn.Linear(rank, dim, bias=False)
         nn.init.kaiming_uniform_(self.A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.B.weight)
         self.lora_attached = True
