@@ -735,6 +735,9 @@ class DiffusionPolicy(nn.Module):
 
         self.ema_noise_pred_net = self.get_ema_average()
 
+        self.nactions = []
+        self.flag = True
+
     def forward(
         self,
         obs_seq: torch.Tensor,
@@ -842,6 +845,8 @@ class DiffusionPolicy(nn.Module):
         # nobs = self.normalize_obs_data(obs_seq)
         nobs = obs_seq
 
+        nactions = []
+
         # infer action
         with torch.no_grad():
 
@@ -874,11 +879,26 @@ class DiffusionPolicy(nn.Module):
                     model_output=noise_pred, timestep=k, sample=naction
                 ).prev_sample
 
+                if self.flag:
+                    self.nactions.append(naction.detach().cpu()[0])
+
+            # print(naction.shape)    # (1, 50, 7)
+
+            self.flag = False
+            # print(nactions.shape)   # (100, 7)
+            # self.pred_actions.append(nactions)
+
         # unnormalize action
         if self.policy_type == "cnn":
             naction = naction[:, self.pad_before : -self.pad_after]
         # naction = self.unnormalize_act_data(naction)
         return naction
+
+    def save(self):
+        # self.pred_actions = torch.stack(self.pred_actions, dim=0)   # (128, 100, 7)
+        self.nactions = torch.stack(self.nactions, dim=0)
+        torch.save(self.nactions, f"/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/lifelong/acil/libero_goal/run_000/seed_100_saved/libero_goal_acil_bc_foundation_dmpel_policy_0_on_task0_videos/diffusion_action.pth")
+        return
 
     def ema_step(self):
         self.ema.step(self.noise_pred_net)

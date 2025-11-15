@@ -160,6 +160,39 @@ class RandomBuffer(torch.nn.Linear, Buffer):
         return self.activation(super().forward(X))
 
 
+# class GaussianKernel(Buffer):
+#     def __init__(
+#         self, mean: torch.Tensor, sigma: float = 1, device=None, dtype=torch.float
+#     ) -> None:
+#         super().__init__()
+#         self.device = device
+#         self.dtype = dtype
+#         factory_kwargs = {"device": device, "dtype": dtype}
+#         assert len(mean.shape) == 2, "The mean should be a 2D tensor."
+#         mean = mean[None, :, :].to(**factory_kwargs)
+#         beta = 1 / (2 * (sigma**2))
+#         self.register_buffer("mean", mean)
+#         self.register_buffer("beta", torch.tensor(beta, **factory_kwargs))
+#
+#     @torch.no_grad()
+#     def forward(self, X: torch.Tensor) -> torch.Tensor:
+#         X = torch.square_(torch.cdist(X.to(self.mean), self.mean))
+#         return torch.exp_(X.mul_(-self.beta))
+#
+#     def init(self, X: torch.Tensor, size: Optional[int] = None) -> None:
+#         if size is not None:
+#             if size <= X.shape[0]:
+#                 idx = torch.randperm(size).to(X.device)
+#                 X = X[idx]
+#             else:
+#                 # The buffer size is suggested to be greater than the number of initial samples.
+#                 # Generate center vectors randomly
+#                 n_require = size - X.shape[0]
+#                 W_proj = torch.normal(mean=0, std=1, size=(n_require, X.shape[0])).to(X)
+#                 W_proj /= torch.sum(W_proj, dim=0)
+#                 X = torch.cat([X, W_proj @ X], dim=0)
+#         self.mean = X.to(self.mean)
+
 class ACIL(torch.nn.Module):
     def __init__(
         self,
@@ -177,6 +210,7 @@ class ACIL(torch.nn.Module):
         # self.backbone_output_size = backbone_output_size
         # self.buffer_size = buffer_size
         self.buffer = RandomBuffer(backbone_output_size, buffer_size, **factory_kwargs)     # (64, 8192)
+        # self.buffer = GaussianKernel(torch.zeros((buffer_size, backbone_output_size)), sigma=1e-3, **factory_kwargs)
         self.analytic_linear = RecursiveLinear(buffer_size, out_features, gamma, **factory_kwargs)    # (8192, 17)
         self.eval()
 
@@ -193,14 +227,6 @@ class ACIL(torch.nn.Module):
 
     @torch.no_grad()
     def fit(self, X, Y):
-        # Y = torch.nn.functional.one_hot(y)  # (bs, 50)
-        # Y = torch.nn.functional.one_hot(data["id"], 50)  # (bs, 1, 17) -> (bs, 17)
-        # X = self.feature_expansion(data["obs"])   # (bs, 8192)
-        # Y = data["id"]
-
-        # Y = data["obs"]["id_vector"].squeeze()  # (bs, 1, 17) -> (bs, 17)
-        # skill_id = data["obs"]["id"].squeeze()
-        # Y = torch.nn.functional.one_hot(skill_id, skill_id.max()+1)   # (bs,) -> (bs, 50)
         X = self.feature_expansion(X)   # (bs, 8192)
         self.analytic_linear.fit(X, Y)
 
@@ -208,56 +234,6 @@ class ACIL(torch.nn.Module):
     def update(self):
         self.analytic_linear.update()
 
-    def reset(self):
-        """
-        Clear all "history" of the policy if there exists any.
-        """
-        self.latent_queue = []
-        self.current_subtask_id = 0
-        self.counter = 0
-        self.prev_subgoal_embedding = None
-        for policy in self.backbone.skill_policies.values():
-            policy.reset()
-
-    @torch.no_grad()
-    def predict(self, data):
-        subtask_vector = self.forward(data)
-        subtask_id = torch.argmax(subtask_vector, dim=1)    # (bs,)
-        subtask_id = subtask_id.cpu().detach().numpy()
-
-        return {"subtask_id": subtask_id}
-
-    @torch.no_grad()
-    def get_action(self, data):
-        # self.model.eval()
-        with torch.no_grad():
-            data = self.backbone.preprocess_input(data, train_mode=False)
-            # if self.counter % self.freq == 0:
-            if self.counter % 10 == 0:
-                predict = self.predict(data)["subtask_id"]
-                print(predict)
-                subtask_id = predict[0]
-
-                # if self.counter < 150:
-                #     subtask_id_set = 3
-                # else:
-                #     subtask_id_set = 2
-                #
-                # print(subtask_id_set)
-                #
-                # if self.current_subtask_id != subtask_id_set:
-                #     self.current_subtask_id = subtask_id_set
-                if self.current_subtask_id != subtask_id:
-                    self.current_subtask_id = subtask_id
-                    self.backbone.skill_policies[self.current_subtask_id].reset()  # reset the subskill Transformer policy
-            self.counter += 1
-            data["task_id"] = self.current_subtask_id    # (bs,)
-            data["obs"]["joint_states"] = data["obs"]["joint_states"].squeeze(0)
-            data["obs"]["agentview_rgb"] = data["obs"]["agentview_rgb"].squeeze(0)   #TODO: change for skill
-            data["obs"]["eye_in_hand_rgb"] = data["obs"]["eye_in_hand_rgb"].squeeze(0)  # TODO: change for skill
-            action = self.backbone.skill_policies[self.current_subtask_id].get_action(data)
-
-        return action
 
 
 class DSAL(torch.nn.Module):
@@ -331,35 +307,39 @@ class DSAL(torch.nn.Module):
 
 if __name__ == '__main__':
 
-    backbone = nn.Linear(100, 50)
-    nn.init.kaiming_uniform_(backbone.weight, a=math.sqrt(5))
+    # backbone = nn.Linear(100, 50)
+    # nn.init.kaiming_uniform_(backbone.weight, a=math.sqrt(5))
 
-    model = ACIL(backbone_output_size=50, backbone=backbone)
+    model = ACIL(backbone_output_size=10, buffer_size=5000)
     print(model)
 
     data1 = {}
-    data1["obs"] = torch.randn(3, 100)
+    data1["obs"] = torch.randn(3, 10)
     # data1["id"] = torch.randint(0, 10, (32,))
 
-    random_tensor = torch.rand(3, 10)
+    data1["id"] = torch.rand(3, 10)
     # normalized_tensor = random_tensor / random_tensor.sum(dim=1, keepdim=True)
     # data1["id"] = normalized_tensor
 
-    model.fit(data1["obs"], random_tensor)
+    # for GaussianKernel
+    # model.buffer.init(data1["obs"], size=5000)
+
+    model.fit(data1["obs"], data1["id"])
 
     # data2 = {}
-    # data2["obs"] = torch.randn(32, 100)
-    # data2["id"] = torch.randint(0, 17, (32,))
+    # data2["obs"] = torch.randn(3, 10)
+    # data2["id"] = torch.rand(3, 10)
     #
-    # model.fit(data2)
+    # model.fit(data2["obs"], data2["id"])
 
     out = model(data1["obs"])
     print(out)
     # out1 = torch.argmax(out, dim=1)
     # print(out1)
-    print(random_tensor)
+    print(data1["id"])
 
-    # out = model(data2)
+    # out = model(data2["obs"])
+    # print(out)
     # out2 = torch.argmax(out, dim=1)
     # print(out2)
     # print(data2["id"])

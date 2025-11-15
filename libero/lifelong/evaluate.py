@@ -166,20 +166,21 @@ def main(args):
     # algo.policy.load_state_dict(sd)
     if cfg.lifelong.algo == "DMPEL" or cfg.lifelong.algo == "ACILLearner":
 
-        # # TODO: load pretrain model
-        # pretrain_sd, cfg, previous_mask = torch_load_model("/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/pretraining/diffusion_head_fft/clip_base_libero90/seed_100/multitask_model_ep10.pth", map_location=args.device_id)
-        # algo.policy.load_state_dict(pretrain_sd, strict=False)
+        # TODO: load pretrain model
+        pretrain_sd, _, _ = torch_load_model("/home/kavin/Documents/GitProjects/CL/DMPEL/experiments/pretraining/diffusion_head_fft/clip_base_libero90/seed_100/multitask_model_ep10.pth", map_location=args.device_id)
+        algo.policy.load_state_dict(pretrain_sd, strict=False)
 
         algo.policy.init_moe_policy()
         # print(algo.policy)
         for i in range(model + 1):
-            algo.policy.add_new_and_freeze_previous(add_expert_num=1)
+            algo.policy.add_new_and_freeze_previous(add_expert_num=cfg.policy.ll_expert_per_task)
         # algo = safe_device(algo, cfg.device)
     elif cfg.lifelong.algo == "TAIL":
         algo.policy.init_lora()
 
     algo = safe_device(algo, cfg.device)
-    algo.policy.load_state_dict(sd, strict=True)
+    algo.policy.load_state_dict(sd, strict=False)
+    algo.policy.policy_head.load_state_dict(torch_load_model(os.path.join(run_folder, f"task{model}_policy_head.pth"), map_location=args.device_id)[0], strict=True)
 
     # if cfg.lifelong.algo == "TAIL":   # acil
     # algo.policy.init_policy_head()
@@ -191,7 +192,7 @@ def main(args):
         algo.policy.init_router()
         # router_path = os.path.join(run_folder, f"acil{args.task_id}_router.pth")
         router_path = os.path.join(run_folder, f"acil{model}_router.pth")
-        sd, cfg, previous_mask = torch_load_model(router_path, map_location=args.device_id)
+        sd, _, _ = torch_load_model(router_path, map_location=args.device_id)
         algo.policy.acil_router.load_state_dict(sd)
 
     if not hasattr(cfg.data, "task_order_index"):
@@ -270,7 +271,7 @@ def main(args):
             "camera_widths": cfg.data.img_w,
         }
 
-        env_num = 20
+        env_num = 1
         env = SubprocVectorEnv(
             [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
         )
@@ -295,12 +296,22 @@ def main(args):
         for _ in range(5):  # simulate the physics without any actions
             env.step(np.zeros((env_num, 7)))
 
+        # timespend = []
+        # time_head = []
+
         with torch.no_grad():
             while steps < cfg.eval.max_steps:
                 steps += 1
 
                 data = raw_obs_to_tensor_obs(obs, task_emb, cfg)
-                actions = algo.policy.get_action(data)
+
+                t0 = time.time()
+
+                actions = algo.policy.get_action(data, mode='eval')
+
+                # timespend.append(time.time() - t0)
+                # time_head.append(time_policy_head)
+
                 obs, reward, done, info = env.step(actions)
                 video_writer.append_vector_obs(
                     obs, dones, camera_name="agentview_image"
@@ -318,10 +329,17 @@ def main(args):
         success_rate = num_success / env_num
         env.close()
 
+        # algo.policy.policy_head.save()
+        # print(sum(timespend) / len(timespend))
+        # print(sum(time_head) / len(time_head))
+
         eval_stats = {
             "loss": test_loss,
             "success_rate": success_rate,
         }
+
+        # torch.save(algo.policy.expert_count, f"{video_folder}/experts.pth")
+        # torch.save(algo.policy.expert_weight, f"{video_folder}/expert_weight.pth")
 
         # os.system(f"mkdir -p {args.save_dir}")
         # torch.save(eval_stats, save_folder)
